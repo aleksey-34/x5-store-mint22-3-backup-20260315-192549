@@ -1,0 +1,8 @@
+employee_id: 013
+last_name: Якупов
+first_name: Расим
+middle_name: Рафаилович
+position: Прораб
+grade: по удостоверению
+birth_date: 1984-11-20
+team: Основной состав

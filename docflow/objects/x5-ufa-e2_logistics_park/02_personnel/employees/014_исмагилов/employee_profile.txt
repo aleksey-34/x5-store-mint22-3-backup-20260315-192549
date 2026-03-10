@@ -1,0 +1,8 @@
+employee_id: 014
+last_name: Исмагилов
+first_name: Салават
+middle_name: Шакирович
+position: Монтажник стальных и железобетонных конструкций
+grade: по удостоверению
+birth_date: 1976-10-30
+team: Монтажная бригада

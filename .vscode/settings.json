@@ -1,0 +1,41 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "Get-PSDrive": true,
+        "/^\\$exe='C:\\\\Users\\\\Stanok\\\\AppData\\\\Local\\\\Programs\\\\Ollama\\\\ollama\\.exe'; & \\$exe list$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Get-Location \\| Out-String; 'HAS_DOT_GIT=' \\+ \\(Test-Path \\.git\\); if \\(Get-Command git -ErrorAction SilentlyContinue\\) \\{ git rev-parse --is-inside-work-tree 2>\\$null; if \\(\\$LASTEXITCODE -ne 0\\) \\{ 'NO_GIT_REPO' \\} else \\{ git status --short \\} \\} else \\{ 'GIT_NOT_INSTALLED' \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^winget install -e --id Git\\.Git --accept-package-agreements --accept-source-agreements --disable-interactivity --silent$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$gitCmd = Get-Command git -ErrorAction SilentlyContinue; if \\(\\$gitCmd\\) \\{ 'GIT_PATH=' \\+ \\$gitCmd\\.Source; git --version \\} elseif \\(Test-Path 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe'\\) \\{ 'GIT_PATH=C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe'; & 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe' --version \\} else \\{ 'GIT_NOT_FOUND_AFTER_INSTALL' \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^& 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe' init -b main; & 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe' status --short$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$root='docflow/objects/x5-ufa-e2_logistics_park'; Get-ChildItem -Path \\$root -Directory \\| ForEach-Object \\{ \\$count=\\(Get-ChildItem -Path \\$_\\.FullName -Recurse -File -ErrorAction SilentlyContinue\\)\\.Count; \\[PSCustomObject\\]@\\{ Folder=\\$_\\.Name; FileCount=\\$count \\} \\} \\| Sort-Object Folder \\| Format-Table -AutoSize \\| Out-String$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git rev-parse --show-toplevel; git rev-parse --is-inside-work-tree; git status -sb -uno; \\(git status --porcelain=v1 -uno \\| Measure-Object\\)\\.Count$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\.\\\\\\.venv\\\\Scripts\\\\python\\.exe -m pytest -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$name=\\(git config --get user\\.name\\); \\$email=\\(git config --get user\\.email\\); if\\(-not \\$name\\)\\{ git config user\\.name \"Stanok\" \\}; if\\(-not \\$email\\)\\{ git config user\\.email \"stanok@local\" \\}; git add \\.; git commit -m \"Initial project baseline\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

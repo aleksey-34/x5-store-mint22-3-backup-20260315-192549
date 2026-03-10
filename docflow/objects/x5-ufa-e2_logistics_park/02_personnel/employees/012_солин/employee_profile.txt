@@ -1,0 +1,8 @@
+employee_id: 012
+last_name: Солин
+first_name: Артем
+middle_name: Николаевич
+position: Монтажник стальных и железобетонных конструкций
+grade: по удостоверению
+birth_date: 2002-06-08
+team: Монтажная бригада

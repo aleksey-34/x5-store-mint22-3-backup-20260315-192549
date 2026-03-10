@@ -1,0 +1,8 @@
+employee_id: 007
+last_name: Исмагилов
+first_name: Вадим
+middle_name: Шакирович
+position: Руководитель
+grade: по удостоверению
+birth_date: 1980-03-02
+team: Руководство

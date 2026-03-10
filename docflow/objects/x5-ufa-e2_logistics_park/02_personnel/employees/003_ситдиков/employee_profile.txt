@@ -1,0 +1,8 @@
+employee_id: 003
+last_name: Ситдиков
+first_name: Илдар
+middle_name: Фанилевич
+position: Электрогазосварщик
+grade: по удостоверению
+birth_date: 1988-02-02
+team: Основной состав

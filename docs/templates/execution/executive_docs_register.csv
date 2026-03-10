@@ -1,0 +1,2 @@
+reg_no,date,doc_code,doc_name,section,work_type,revision,status,submitted_to,submitted_date,accepted_date,file_path,responsible,notes
+1,2026-03-09,ACT-001,Акт освидетельствования скрытых работ,КЖ,Армирование фундамента,R00,draft,,,,docflow/objects/<object>/05_execution_docs/,Иванов И.И.,

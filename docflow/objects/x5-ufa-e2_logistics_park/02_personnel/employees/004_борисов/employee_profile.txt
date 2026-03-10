@@ -1,0 +1,8 @@
+employee_id: 004
+last_name: Борисов
+first_name: Ринат
+middle_name: Рашитович
+position: Монтажник стальных и железобетонных конструкций
+grade: по удостоверению
+birth_date: 1986-11-16
+team: Монтажная бригада

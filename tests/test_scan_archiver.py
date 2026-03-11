@@ -60,3 +60,19 @@ def test_ingest_inbox_moves_invalid_file_to_manual_review(tmp_path: Path) -> Non
     assert results[0].status == "manual_review"
     assert (inbox / "manual_review" / "bad_name.pdf").exists()
     assert (inbox / "manual_review" / "review_log.csv").exists()
+
+
+def test_ingest_inbox_adds_classifier_hint_for_unknown_doc_type(tmp_path: Path) -> None:
+    object_root = tmp_path / "object"
+    inbox = object_root / "10_scan_inbox"
+    inbox.mkdir(parents=True)
+
+    bad_file = inbox / "20260310__PRIKAZ__appoint_hse.pdf"
+    bad_file.write_text("bad", encoding="utf-8")
+
+    results = ingest_inbox(object_root=object_root, inbox_folder=inbox, db=None)
+
+    assert len(results) == 1
+    assert results[0].status == "manual_review"
+    assert results[0].suggested_doc_type == "order"
+    assert results[0].suggested_confidence is not None

@@ -93,7 +93,10 @@ python scripts/bootstrap_object_docs.py \
 Локальная LLM (Ollama):
 
 - /local-llm/status - проверить доступность локальной модели
+- /local-llm/runtime - проверить runtime, активные модели и CPU/GPU режим
+- /local-llm/profiles - посмотреть быстрые профили quality/speed
 - /local-llm/chat - отправить запрос в локальную модель с контекстом объекта
+- /local-llm/chat/profile - запрос в модель через профиль с fallback на легкую модель
 
 Пример обработки сообщения:
 
@@ -162,6 +165,14 @@ python scripts/scan_archive_docs.py bundle \
    --object-root docflow/objects/x5-ufa-e2_logistics_park \
    --from-date 2026-03-01 \
    --to-date 2026-03-31
+```
+
+MVP-классификация сканов в ручной очереди:
+
+```bash
+python scripts/scan_archive_docs.py classify \
+   --object-root docflow/objects/x5-ufa-e2_logistics_park \
+   --recursive
 ```
 
 Нераспознанные файлы автоматически уходят в `10_scan_inbox/manual_review/`.

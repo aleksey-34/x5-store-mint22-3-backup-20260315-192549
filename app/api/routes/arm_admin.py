@@ -28,7 +28,7 @@ from app.services.local_llm import (
     LocalLLMConnectionError,
     LocalLLMRequestError,
     check_local_llm_available,
-    generate_with_local_llm,
+    generate_with_local_llm_profile,
 )
 
 router = APIRouter(prefix="/arm", tags=["arm"])
@@ -281,13 +281,15 @@ def arm_assist(payload: ArmAssistRequest, db: Session = Depends(get_db)) -> ArmA
     context = _build_arm_context(payload=dashboard, todos=todos)
 
     try:
-        result = generate_with_local_llm(
+        result, used_profile, fallback_used = generate_with_local_llm_profile(
             prompt=payload.question,
             context=context,
+            profile=payload.profile,
             model=payload.model,
             system_prompt=None,
             temperature=payload.temperature,
             num_predict=payload.num_predict,
+            allow_fallback=payload.allow_fallback,
         )
     except LocalLLMConnectionError as exc:
         raise HTTPException(
@@ -304,6 +306,8 @@ def arm_assist(payload: ArmAssistRequest, db: Session = Depends(get_db)) -> ArmA
         model=result.model,
         response=result.response,
         done=result.done,
+        used_profile=used_profile,
+        fallback_used=fallback_used,
         total_duration_sec=result.total_duration_sec,
         eval_tokens=result.eval_tokens,
         eval_tokens_per_sec=result.eval_tokens_per_sec,

@@ -64,17 +64,24 @@ def test_arm_assist_uses_local_llm(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("app.api.routes.arm_admin.resolve_object_root", lambda: root)
     monkeypatch.setattr("app.api.routes.arm_admin.check_local_llm_available", lambda: (True, "0.17.7"))
 
-    def fake_generate_with_local_llm(**_: object) -> LocalLLMResult:
-        return LocalLLMResult(
-            model="llama3.2:3b",
-            response="Готово",
-            done=True,
-            total_duration_sec=0.7,
-            eval_tokens=20,
-            eval_tokens_per_sec=28.5,
+    def fake_generate_with_local_llm_profile(**_: object) -> tuple[LocalLLMResult, str, bool]:
+        return (
+            LocalLLMResult(
+                model="llama3.2:3b",
+                response="Готово",
+                done=True,
+                total_duration_sec=0.7,
+                eval_tokens=20,
+                eval_tokens_per_sec=28.5,
+            ),
+            "balanced",
+            False,
         )
 
-    monkeypatch.setattr("app.api.routes.arm_admin.generate_with_local_llm", fake_generate_with_local_llm)
+    monkeypatch.setattr(
+        "app.api.routes.arm_admin.generate_with_local_llm_profile",
+        fake_generate_with_local_llm_profile,
+    )
 
     with TestClient(app) as client:
         response = client.post("/arm/assist", json={"question": "Что сделать сегодня?"})
@@ -83,3 +90,5 @@ def test_arm_assist_uses_local_llm(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload["response"] == "Готово"
     assert payload["model"] == "llama3.2:3b"
+    assert payload["used_profile"] == "balanced"
+    assert payload["fallback_used"] is False

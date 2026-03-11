@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     local_llm_enabled: bool = True
     local_llm_base_url: str = "http://127.0.0.1:11434"
     local_llm_model: str = "llama3.2:3b"
+    local_llm_fallback_model: str = "qwen2.5:1.5b"
     local_llm_timeout_seconds: int = 180
     local_llm_system_prompt: str = (
         "Ты помощник АРМ X5_Storage для стройплощадки. "

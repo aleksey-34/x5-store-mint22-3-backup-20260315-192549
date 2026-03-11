@@ -12,6 +12,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from sqlalchemy.orm import Session
 
 from app.models.document import Document
+from app.services.scan_classifier import classify_scan_filename
 
 try:
     import pypdfium2 as pdfium
@@ -77,6 +78,8 @@ class IngestResult:
     document_id: int | None = None
     ocr_status: str = "disabled"
     ocr_text_path: str | None = None
+    suggested_doc_type: str | None = None
+    suggested_confidence: float | None = None
 
 
 @dataclass
@@ -400,13 +403,28 @@ def ingest_scan_file(
             ocr_text_path=ocr_text_path,
         )
     except Exception as exc:  # noqa: BLE001
+        prediction = classify_scan_filename(source_file.name)
+        suggestion_suffix = ""
+        suggested_doc_type: str | None = None
+        suggested_confidence: float | None = None
+        if prediction.predicted_doc_type != "unknown":
+            suggested_doc_type = prediction.predicted_doc_type
+            suggested_confidence = prediction.confidence
+            suggestion_suffix = (
+                f"; suggested_doc_type={prediction.predicted_doc_type}; "
+                f"confidence={prediction.confidence:.2f}"
+            )
+
+        final_message = f"{exc}{suggestion_suffix}"
         target = ensure_unique_path(manual_review_folder / source_file.name)
         shutil.move(str(source_file), str(target))
-        append_review_log(manual_review_folder / "review_log.csv", source_file.name, str(exc))
+        append_review_log(manual_review_folder / "review_log.csv", source_file.name, final_message)
         return IngestResult(
             source_name=source_file.name,
             status="manual_review",
-            message=str(exc),
+            message=final_message,
+            suggested_doc_type=suggested_doc_type,
+            suggested_confidence=suggested_confidence,
         )
 
 

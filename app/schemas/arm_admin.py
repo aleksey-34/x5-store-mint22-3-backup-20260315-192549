@@ -1,6 +1,10 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+ArmAssistProfile = Literal["fast", "balanced", "quality"]
 
 
 class ArmChecklistItem(BaseModel):
@@ -51,15 +55,19 @@ class ArmTodoResponse(BaseModel):
 
 class ArmAssistRequest(BaseModel):
     question: str = Field(min_length=1)
+    profile: ArmAssistProfile = "balanced"
+    allow_fallback: bool = True
     model: str | None = None
-    temperature: float = Field(default=0.2, ge=0.0, le=1.5)
-    num_predict: int = Field(default=320, ge=1, le=4096)
+    temperature: float | None = Field(default=None, ge=0.0, le=1.5)
+    num_predict: int | None = Field(default=None, ge=1, le=4096)
 
 
 class ArmAssistResponse(BaseModel):
     model: str
     response: str
     done: bool
+    used_profile: ArmAssistProfile
+    fallback_used: bool
     total_duration_sec: float | None = None
     eval_tokens: int | None = None
     eval_tokens_per_sec: float | None = None

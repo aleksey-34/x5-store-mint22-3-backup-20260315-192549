@@ -1,0 +1,6 @@
+employee_id: 015
+last_name: Лазарев
+first_name: Алексей
+middle_name: Егорович
+position: Инженер ПТО
+birth_date: 09.06.1987

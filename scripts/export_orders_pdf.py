@@ -122,7 +122,9 @@ def main() -> None:
             str(chrome_path),
             "--headless=new",
             "--disable-gpu",
-          "--no-pdf-header-footer",
+            # Keep both flags for Chrome compatibility across versions.
+            "--no-pdf-header-footer",
+            "--print-to-pdf-no-header",
             f"--print-to-pdf={pdf_path.resolve()}",
             str(temp_path.resolve()),
         ]

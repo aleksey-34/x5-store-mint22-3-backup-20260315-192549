@@ -4,11 +4,25 @@
 		{
 			"label": "Run FastAPI API",
 			"type": "shell",
-			"command": ".\\.venv\\Scripts\\python.exe",
+			"command": "powershell",
 			"args": [
-				"-m",
-				"uvicorn",
-				"app.main:app",
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\scripts\\run_api_clean.ps1"
+			],
+			"isBackground": true,
+			"group": "build"
+		},
+		{
+			"label": "Run FastAPI API (Linux Mint)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"./scripts/run_api_clean.sh",
+				"--port",
+				"8000",
 				"--reload"
 			],
 			"isBackground": true,

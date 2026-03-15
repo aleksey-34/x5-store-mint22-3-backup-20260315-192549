@@ -45,6 +45,7 @@ class ArmTodoItem(BaseModel):
     priority: str
     title: str
     details: str | None = None
+    action_path: str | None = None
 
 
 class ArmTodoResponse(BaseModel):
@@ -71,3 +72,190 @@ class ArmAssistResponse(BaseModel):
     total_duration_sec: float | None = None
     eval_tokens: int | None = None
     eval_tokens_per_sec: float | None = None
+
+
+class ArmFsEntry(BaseModel):
+    name: str
+    rel_path: str
+    is_dir: bool
+    size: int | None = None
+    modified_at: str | None = None
+
+
+class ArmFsTreeResponse(BaseModel):
+    root: str
+    rel_path: str
+    entries: list[ArmFsEntry]
+
+
+class ArmFileReadResponse(BaseModel):
+    rel_path: str
+    content: str
+    encoding: str = "utf-8"
+
+
+class ArmFileWriteRequest(BaseModel):
+    rel_path: str = Field(min_length=1)
+    content: str
+
+
+class ArmActionResponse(BaseModel):
+    ok: bool
+    message: str
+
+
+class ArmSpeechTranscribeResponse(BaseModel):
+    ok: bool
+    text: str = ""
+    provider: str
+    message: str
+
+
+class ArmScannerDevice(BaseModel):
+    index: int
+    name: str
+    device_id: str | None = None
+
+
+class ArmScannerDevicesResponse(BaseModel):
+    devices: list[ArmScannerDevice]
+
+
+class ArmScanCaptureRequest(BaseModel):
+    doc_type: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    employee_id: str | None = None
+    device_index: int = Field(default=1, ge=1)
+    image_format: str = Field(default="jpg", min_length=1)
+    dpi: int = Field(default=300, ge=75, le=1200)
+    grayscale: bool = False
+
+
+class ArmScanIngestRequest(BaseModel):
+    enable_ocr: bool = True
+    ocr_lang: str = "rus+eng"
+    tesseract_cmd: str | None = None
+    max_pdf_pages: int = Field(default=4, ge=1, le=30)
+
+
+class ArmScanIngestItem(BaseModel):
+    source_name: str
+    status: str
+    message: str
+    destination: str | None = None
+    document_id: int | None = None
+    ocr_status: str
+    ocr_text_path: str | None = None
+    suggested_doc_type: str | None = None
+    suggested_confidence: float | None = None
+
+
+class ArmScanIngestResponse(BaseModel):
+    archived: int = Field(ge=0)
+    manual_review: int = Field(ge=0)
+    items: list[ArmScanIngestItem]
+
+
+EmployeeChecklistActionMode = Literal["selected", "missing", "all"]
+ProfessionGroupKey = Literal["default", "electric", "supervisor", "itr", "custom"]
+
+
+class ArmEmployeeChecklistItem(BaseModel):
+    code: str
+    title: str
+    folder_rel_path: str
+    expected_patterns: list[str]
+    required_count: int = Field(default=1, ge=1)
+    found_count: int = Field(ge=0)
+    ready: bool
+    found_files: list[str]
+    guidance: str
+
+
+class ArmEmployeeChecklistResponse(BaseModel):
+    employee_rel_path: str
+    employee_id: str | None = None
+    employee_name: str | None = None
+    profile_position: str | None = None
+    profession: str
+    total_required: int = Field(ge=0)
+    ready_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    progress_percent: float = Field(ge=0.0, le=100.0)
+    items: list[ArmEmployeeChecklistItem]
+
+
+class ArmEmployeeChecklistGenerateRequest(BaseModel):
+    employee_rel_path: str = Field(min_length=1)
+    profession: str | None = None
+    order_date: str | None = Field(default=None, pattern=r"^\d{2}\.\d{2}\.\d{4}$")
+    mode: EmployeeChecklistActionMode = "missing"
+    codes: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+
+
+class ArmEmployeeChecklistGenerateResponse(BaseModel):
+    ok: bool
+    employee_rel_path: str
+    profession: str
+    mode: EmployeeChecklistActionMode
+    created_files: list[str]
+    skipped_files: list[str]
+    message: str
+
+
+class ArmProfessionOption(BaseModel):
+    key: ProfessionGroupKey
+    label: str
+
+
+class ArmEmployeeCatalogItem(BaseModel):
+    employee_rel_path: str
+    employee_id: str | None = None
+    employee_name: str
+    position: str | None = None
+    profession_group: ProfessionGroupKey
+    profession_label: str
+
+
+class ArmEmployeeCatalogResponse(BaseModel):
+    total: int = Field(ge=0)
+    items: list[ArmEmployeeCatalogItem]
+    profession_options: list[ArmProfessionOption]
+
+
+class ArmEmployeeOverviewAction(BaseModel):
+    code: str
+    title: str
+    guidance: str
+    scope: str
+    missing_employees: int = Field(ge=0)
+
+
+class ArmEmployeeOverviewEmployee(BaseModel):
+    employee_rel_path: str
+    employee_id: str | None = None
+    employee_name: str
+    position: str | None = None
+    profession: str
+    total_required: int = Field(ge=0)
+    ready_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    progress_percent: float = Field(ge=0.0, le=100.0)
+    top_missing_codes: list[str]
+
+
+class ArmEmployeeOverviewGroup(BaseModel):
+    profession_group: ProfessionGroupKey
+    profession_label: str
+    employees_total: int = Field(ge=0)
+    ready_employees: int = Field(ge=0)
+    average_progress_percent: float = Field(ge=0.0, le=100.0)
+    missing_actions: list[ArmEmployeeOverviewAction]
+    employees: list[ArmEmployeeOverviewEmployee]
+
+
+class ArmEmployeeChecklistOverviewResponse(BaseModel):
+    generated_at: datetime
+    profession_filter: str | None = None
+    groups: list[ArmEmployeeOverviewGroup]

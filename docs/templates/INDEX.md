@@ -17,7 +17,19 @@
 
 ## Приказы
 
+- [docs/templates/orders/README.md](orders/README.md)
 - [docs/templates/orders/order_responsible_person_template.md](orders/order_responsible_person_template.md)
+- [docs/templates/orders/order_11_ps_responsible_template.md](orders/order_11_ps_responsible_template.md)
+- [docs/templates/orders/order_12_permit_issuer_template.md](orders/order_12_permit_issuer_template.md)
+- [docs/templates/orders/order_13_height_works_template.md](orders/order_13_height_works_template.md)
+- [docs/templates/orders/order_14_fire_safety_template.md](orders/order_14_fire_safety_template.md)
+- [docs/templates/orders/order_15_loading_unloading_template.md](orders/order_15_loading_unloading_template.md)
+- [docs/templates/orders/order_16_pressure_vessels_template.md](orders/order_16_pressure_vessels_template.md)
+- [docs/templates/orders/order_17_close_shift_template.md](orders/order_17_close_shift_template.md)
+- [docs/templates/orders/order_18_internship_template.md](orders/order_18_internship_template.md)
+- [docs/templates/orders/order_19_independent_work_admission_template.md](orders/order_19_independent_work_admission_template.md)
+- [docs/templates/orders/order_20_concrete_heating_template.md](orders/order_20_concrete_heating_template.md)
+- [docs/templates/orders/letter_admission_workers_equipment_template.md](orders/letter_admission_workers_equipment_template.md)
 
 ## Реквизиты организации
 

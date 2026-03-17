@@ -151,6 +151,7 @@ class ArmScanCaptureRequest(BaseModel):
     employee_id: str | None = None
     device_index: int = Field(default=1, ge=1)
     image_format: str = Field(default="jpg", min_length=1)
+    scan_profile: int = Field(default=1, ge=1, le=3)
     dpi: int = Field(default=300, ge=75, le=1200)
     grayscale: bool = False
 

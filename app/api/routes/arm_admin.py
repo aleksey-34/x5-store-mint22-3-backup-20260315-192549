@@ -518,7 +518,6 @@ TEXT_PREVIEW_EXTENSIONS = {
     ".py",
     ".log",
     ".ini",
-    ".docx",
 }
 INLINE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 COMPETITOR_RESEARCH_HTML = PROJECT_ROOT / "docs" / "document_control" / "arm_competitors_research.html"
@@ -596,6 +595,23 @@ SCANNER_DOC_TYPES: dict[str, str] = {
     "OTHER": "Другое",
 }
 SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE: set[str] = {"PASSPORT"}
+SCANNER_PROFILE_SETTINGS: dict[int, dict[str, object]] = {
+    1: {
+        "label": "Профиль 1: документы + печати + OCR",
+        "dpi": 300,
+        "grayscale": True,
+    },
+    2: {
+        "label": "Профиль 2: максимально читаемо",
+        "dpi": 400,
+        "grayscale": True,
+    },
+    3: {
+        "label": "Профиль 3: профиль 2 + цвет",
+        "dpi": 400,
+        "grayscale": False,
+    },
+}
 
 MANUAL_REVIEW_TARGET_BY_SCAN_TYPE: dict[str, str] = {
     "ORDER": "01_orders_and_appointments",
@@ -765,6 +781,95 @@ def _read_docx_preview(path: Path) -> str:
         content = "Документ DOCX не содержит извлекаемого текста для предпросмотра."
 
     return content
+
+
+def _analyze_xlsx_brief(path: Path) -> dict[str, object]:
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Для аналитики XLSX установите openpyxl",
+        ) from exc
+
+    workbook = load_workbook(filename=str(path), data_only=True, read_only=True)
+    sheets: list[dict[str, object]] = []
+    for sheet in workbook.worksheets:
+        max_row = int(sheet.max_row or 0)
+        max_col = int(sheet.max_column or 0)
+        headers: list[str] = []
+        if max_row > 0:
+            first_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            headers = [str(cell).strip() for cell in first_row if cell is not None and str(cell).strip()][:10]
+        sheets.append(
+            {
+                "title": sheet.title,
+                "rows": max_row,
+                "cols": max_col,
+                "headers": headers,
+            }
+        )
+
+    return {
+        "file_name": path.name,
+        "sheets": sheets,
+    }
+
+
+def _scan_profile_settings(profile: int | None) -> dict[str, object]:
+    safe_profile = int(profile or 1)
+    return SCANNER_PROFILE_SETTINGS.get(safe_profile, SCANNER_PROFILE_SETTINGS[1]).copy()
+
+
+def _detect_recompress_profile_for_file(path: Path) -> int:
+    rel = str(path).lower().replace("\\", "/")
+    if any(token in rel for token in ("счет", "invoice", "упд", "upd", "печат", "подпис", "stamp", "signature")):
+        return 3
+    return 2
+
+
+def _recompress_image_file(path: Path, profile_id: int) -> tuple[bool, int, int, int]:
+    try:
+        from PIL import Image
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Для сжатия сканов установите Pillow: pip install pillow",
+        ) from exc
+
+    settings = _scan_profile_settings(profile_id)
+    grayscale = bool(settings.get("grayscale", True))
+    dpi = int(settings.get("dpi", 300))
+
+    before_size = path.stat().st_size
+    suffix = path.suffix.lower()
+
+    try:
+        with Image.open(path) as image:
+            src = image
+            if grayscale:
+                src = image.convert("L")
+            elif image.mode not in {"RGB", "RGBA"}:
+                src = image.convert("RGB")
+
+            save_kwargs: dict[str, object] = {}
+            if suffix in {".jpg", ".jpeg"}:
+                save_kwargs.update({"quality": 80, "optimize": True, "progressive": True, "dpi": (dpi, dpi)})
+            elif suffix in {".tif", ".tiff"}:
+                save_kwargs.update({"compression": "tiff_lzw", "dpi": (dpi, dpi)})
+            elif suffix == ".png":
+                save_kwargs.update({"optimize": True, "compress_level": 9})
+            else:
+                save_kwargs.update({"dpi": (dpi, dpi)})
+
+            src.save(path, **save_kwargs)
+    except HTTPException:
+        raise
+    except Exception:
+        return False, before_size, before_size, profile_id
+
+    after_size = path.stat().st_size
+    return True, before_size, after_size, profile_id
 
 
 def _read_text_preview_content(path: Path) -> tuple[str, str]:
@@ -4287,6 +4392,13 @@ def arm_fs_print_preview(rel_path: str, auto_print: bool = True) -> HTMLResponse
         content, _ = _read_text_preview_content(target)
         is_timesheet = _is_timesheet_document(content)
         body_html = _render_markdown_for_print(content)
+    elif suffix == ".docx":
+        content = _read_docx_preview(target)
+        body_html = (
+            "<div class=\"meta\">DOCX-предпросмотр: извлеченный текст для печати. "
+            "Для точной верстки используйте печать из Word.</div>"
+            f"<pre>{escape(content)}</pre>"
+        )
     elif suffix in TEXT_PREVIEW_EXTENSIONS:
         content, encoding = _read_text_preview_content(target)
         body_html = (
@@ -4474,6 +4586,10 @@ def arm_scanner_scan_to_inbox(payload: ArmScanCaptureRequest) -> ArmActionRespon
             detail="Для типа «Удостоверение/протокол» заполните код сотрудника.",
         )
 
+    profile_settings = _scan_profile_settings(payload.scan_profile)
+    effective_dpi = int(profile_settings.get("dpi", payload.dpi))
+    effective_grayscale = bool(profile_settings.get("grayscale", payload.grayscale))
+
     args = [
         "scan-to-inbox",
         "--object-root",
@@ -4487,9 +4603,9 @@ def arm_scanner_scan_to_inbox(payload: ArmScanCaptureRequest) -> ArmActionRespon
         "--format",
         payload.image_format,
         "--dpi",
-        str(payload.dpi),
+        str(effective_dpi),
     ]
-    if payload.grayscale:
+    if effective_grayscale:
         args.append("--grayscale")
     if payload.employee_id:
         args.extend(["--employee-id", payload.employee_id])
@@ -4501,7 +4617,52 @@ def arm_scanner_scan_to_inbox(payload: ArmScanCaptureRequest) -> ArmActionRespon
             detail=_humanize_scanner_error(completed.stderr, completed.stdout),
         )
 
-    message = completed.stdout.strip() or "Скан добавлен во входящую папку"
+    profile_label = str(profile_settings.get("label") or f"Профиль {int(payload.scan_profile or 1)}")
+    message = completed.stdout.strip() or f"Скан добавлен во входящую папку ({profile_label})"
+    return ArmActionResponse(ok=True, message=message)
+
+
+@router.post("/scanner/recompress-history", response_model=ArmActionResponse)
+def arm_scanner_recompress_history() -> ArmActionResponse:
+    root = resolve_object_root()
+
+    folders = [
+        root / "10_scan_inbox",
+        root / "08_outgoing_submissions",
+        root / "02_personnel" / "employees",
+    ]
+    image_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+
+    scanned = 0
+    changed = 0
+    before_total = 0
+    after_total = 0
+
+    for base in folders:
+        if not base.exists():
+            continue
+        for file in base.rglob("*"):
+            if not file.is_file() or file.suffix.lower() not in image_extensions:
+                continue
+            scanned += 1
+            profile_id = _detect_recompress_profile_for_file(file)
+            ok, before_size, after_size, _ = _recompress_image_file(file, profile_id)
+            before_total += before_size
+            after_total += after_size
+            if ok and after_size < before_size:
+                changed += 1
+
+    if scanned == 0:
+        return ArmActionResponse(ok=True, message="Сканы для оптимизации не найдены.")
+
+    saved_bytes = max(0, before_total - after_total)
+    saved_mb = round(saved_bytes / (1024 * 1024), 2)
+    before_mb = round(before_total / (1024 * 1024), 2)
+    after_mb = round(after_total / (1024 * 1024), 2)
+    message = (
+        f"Оптимизация завершена: обработано {scanned} файлов, сжато {changed}. "
+        f"Было {before_mb} МБ, стало {after_mb} МБ, экономия {saved_mb} МБ."
+    )
     return ArmActionResponse(ok=True, message=message)
 
 
@@ -4900,6 +5061,7 @@ def _arm_simple_nav_html(active: str) -> str:
         ("employees", "/arm/employees", "Сотрудники"),
         ("checklist", "/arm/checklist/view", "Чеклист"),
         ("permit-height", "/arm/permit/height", "Наряд высота"),
+        ("aosr", "/arm/aosr", "АОСР"),
         ("todo", "/arm/todo/view", "План дня"),
         ("periodic", "/arm/periodic/view", "Периодические"),
         ("api", "/docs", "API"),
@@ -4988,6 +5150,7 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
         "<div class=\"meta\">Управление статусами документов в БД: зеленая галочка — утверждено, синяя — вновь создано, желтая шестеренка — требует исправления.</div>"
         '<div id="structureStatusMsg" class="meta" style="margin-top:8px;">Готово к изменениям.</div>'
         "<style>"
+        ".structure-wrap{overflow-x:auto;padding-bottom:8px}"
         ".structure-table{width:100%;table-layout:fixed}"
         ".structure-table th,.structure-table td{padding:6px 8px;font-size:12px;line-height:1.2;vertical-align:top}"
         ".structure-table th{font-size:11px}"
@@ -5000,9 +5163,9 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
         ".structure-table td:nth-child(7){width:112px}"
         ".structure-table td:nth-child(8){width:170px}"
         ".structure-table td:nth-child(9){width:132px}"
-        ".structure-table td:nth-child(10){width:130px}"
-        ".structure-table td:nth-child(11){width:152px}"
-        ".structure-table td:nth-child(12){width:132px}"
+        ".structure-table td:nth-child(10){width:150px}"
+        ".structure-table td:nth-child(11){width:240px}"
+        ".structure-table td:nth-child(12){width:300px}"
         ".status-badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;line-height:1.15}"
         ".status-approved{background:#dcfce7;color:#166534}"
         ".status-new{background:#dbeafe;color:#1d4ed8}"
@@ -5011,15 +5174,15 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
         ".status-keep{background:#e2e8f0;color:#1e293b}"
         ".status-select,.fix-input{width:100%;min-width:120px;box-sizing:border-box;padding:6px 8px;font-size:12px}"
         ".fix-input{min-width:160px}"
-        ".action-links{display:grid;gap:6px}"
-        ".action-links .btn-inline{width:100%;min-width:140px;padding:6px 10px;font-size:12px;line-height:1.2}"
+        ".action-links{display:flex;gap:6px;flex-wrap:wrap}"
+        ".action-links .btn-inline{min-width:150px;padding:6px 10px;font-size:12px;line-height:1.2}"
         "td .btn-inline{padding:6px 10px;font-size:12px;line-height:1.2;min-width:110px}"
         "@media (max-width: 1400px){.structure-table{table-layout:auto}}"
         "</style>"
-        "<table class=\"structure-table\"><thead><tr>"
+        "<div class=\"structure-wrap\"><table class=\"structure-table\"><thead><tr>"
         "<th>ID</th><th>Документ</th><th>№ приказа</th><th>Наименование из шапки</th><th>Тип</th><th>Статус</th><th>Удаление</th><th>Что исправить</th><th>Новый статус</th><th>Действие</th><th>Управление</th><th>Файл</th>"
         "</tr></thead>"
-        f"<tbody>{rows_html}</tbody></table>"
+        f"<tbody>{rows_html}</tbody></table></div>"
         "</section>"
         "<script>"
         "const structureStatusMsg = document.getElementById('structureStatusMsg');"
@@ -6155,6 +6318,73 @@ def arm_height_permit_html() -> HTMLResponse:
     return _arm_simple_page(title="АРМ: наряд на высоте", active_nav="permit-height", body_html=body_html)
 
 
+@router.get("/aosr", response_class=HTMLResponse)
+def arm_aosr_html() -> HTMLResponse:
+    root = resolve_object_root()
+    incoming = root / "00_incoming_requests"
+    requested_files = [
+        incoming / "АОСР(монт колонн).xlsx",
+        incoming / "Реестр к акту ( монтаж колонн).xlsx",
+    ]
+
+    file_cards: list[str] = []
+    for file_path in requested_files:
+        if not file_path.exists() or not file_path.is_file():
+            file_cards.append(
+                "<section class='card'><h2>"
+                + escape(file_path.name)
+                + "</h2><div class='meta warn'>Файл не найден в 00_incoming_requests.</div></section>"
+            )
+            continue
+
+        rel = _to_rel_path(root, file_path)
+        analysis_error = ""
+        try:
+            analysis = _analyze_xlsx_brief(file_path)
+        except HTTPException as exc:
+            analysis = {"sheets": []}
+            analysis_error = str(exc.detail or "Не удалось проанализировать XLSX")
+        rows_html = "".join(
+            "<tr>"
+            f"<td>{escape(str(sheet.get('title') or 'Лист'))}</td>"
+            f"<td>{escape(str(sheet.get('rows') or 0))}</td>"
+            f"<td>{escape(str(sheet.get('cols') or 0))}</td>"
+            f"<td>{escape(', '.join(sheet.get('headers') or [])) or '—'}</td>"
+            "</tr>"
+            for sheet in analysis.get("sheets", [])
+        )
+        if not rows_html and not analysis_error:
+            rows_html = "<tr><td colspan='4'>Листы не обнаружены.</td></tr>"
+
+        if analysis_error:
+            rows_html = "<tr><td colspan='4'>" + escape(analysis_error) + "</td></tr>"
+
+        file_cards.append(
+            "<section class='card'>"
+            f"<h2>{escape(file_path.name)}</h2>"
+            f"<div class='meta'>Путь: {escape(rel)}</div>"
+            f"<div class='action-links' style='margin-top:8px'>{_arm_file_actions_html(rel, back_href='/arm/aosr')}</div>"
+            "<div class='meta' style='margin-top:10px'>Аналитика XLSX</div>"
+            "<table><thead><tr><th>Лист</th><th>Строк</th><th>Колонок</th><th>Первые заголовки</th></tr></thead>"
+            f"<tbody>{rows_html}</tbody></table>"
+            "</section>"
+        )
+
+    body_html = (
+        "<section class='card'>"
+        "<h1>АОСР: реестр паспортов и входящие XLSX</h1>"
+        "<div class='meta'>Раздел аналогичен «Наряд высота»: используйте готовые действия файла, "
+        "предпросмотр и печать на базе шаблонов проекта.</div>"
+        "<div class='controls'>"
+        + _arm_action_anchor('/arm/permit/height', 'Открыть Наряд высота')
+        + _arm_action_anchor('/arm/structure/view', 'Открыть Структуру и действия')
+        + "</div>"
+        "</section>"
+        + "".join(file_cards)
+    )
+    return _arm_simple_page(title="АРМ: АОСР", active_nav="aosr", body_html=body_html)
+
+
 @router.get("/todo/view", response_class=HTMLResponse)
 def arm_todo_html(db: Session = Depends(get_db)) -> HTMLResponse:
     payload = _build_dashboard_payload(db=db)
@@ -6378,6 +6608,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
 
     const filePathLabel = document.getElementById('filePath');
     const previewCard = document.getElementById('previewCard');
+    const fileRenderWrap = document.getElementById('fileRenderWrap');
     const fileRenderFrame = document.getElementById('fileRenderFrame');
     const fileEditor = document.getElementById('fileEditor');
     const fileSourceToggleBtn = document.getElementById('fileSourceToggleBtn');
@@ -6385,9 +6616,16 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     const fileSaveBtn = document.getElementById('fileSaveBtn');
     const fileDownloadBtn = document.getElementById('fileDownloadBtn');
     const filePrintBtn = document.getElementById('filePrintBtn');
+    const fileZoomOutBtn = document.getElementById('fileZoomOutBtn');
+    const fileZoomResetBtn = document.getElementById('fileZoomResetBtn');
+    const fileZoomInBtn = document.getElementById('fileZoomInBtn');
+    const fileMoveBtn = document.getElementById('fileMoveBtn');
+    const fileDeleteBtn = document.getElementById('fileDeleteBtn');
 
     const scannerDevices = document.getElementById('scannerDevices');
     const scannerDocType = document.getElementById('scannerDocType');
+    const scannerProfile = document.getElementById('scannerProfile');
+    const scannerProfileLabel = document.getElementById('scannerProfileLabel');
     const scannerSortMode = document.getElementById('scannerSortMode');
     const scannerSubject = document.getElementById('scannerSubject');
     const scannerEmployee = document.getElementById('scannerEmployee');
@@ -6402,6 +6640,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     const scanBtn = document.getElementById('scanBtn');
     const ingestBtn = document.getElementById('ingestBtn');
     const manualClassifyBtn = document.getElementById('manualClassifyBtn');
+    const recompressScansBtn = document.getElementById('recompressScansBtn');
     const manualReview = document.getElementById('manualReview');
     const manualReviewList = document.getElementById('manualReviewList');
     const manualReviewSelection = document.getElementById('manualReviewSelection');
@@ -6516,6 +6755,8 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     let treeNavigationHistory = [];
     let treeNavigationIndex = -1;
     let fileSourceVisible = false;
+    let filePreviewZoom = 1;
+    let currentScannerProfile = 1;
     let voiceRecognition = null;
     let voiceListening = false;
     let voiceFallbackMode = false;
@@ -6809,6 +7050,89 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             ? ('/arm/fs/print-preview?rel_path=' + encodeURIComponent(safePath) + '&auto_print=0')
             : ('/arm/fs/view?rel_path=' + encodeURIComponent(safePath));
         fileRenderFrame.src = baseUrl + '&v=' + Date.now();
+        applyPreviewZoom();
+    }
+
+    function applyPreviewZoom() {
+        if (!fileRenderFrame || !fileRenderWrap) {
+            return;
+        }
+        const safeZoom = Math.max(0.5, Math.min(2, Number(filePreviewZoom) || 1));
+        filePreviewZoom = safeZoom;
+        fileRenderFrame.style.transformOrigin = '0 0';
+        fileRenderFrame.style.transform = 'scale(' + safeZoom + ')';
+        fileRenderFrame.style.width = (100 / safeZoom) + '%';
+        fileRenderFrame.style.height = (66 / safeZoom) + 'vh';
+    }
+
+    function setPreviewZoom(nextZoom) {
+        filePreviewZoom = Math.max(0.5, Math.min(2, Number(nextZoom) || 1));
+        applyPreviewZoom();
+        if (fileZoomResetBtn) {
+            fileZoomResetBtn.textContent = Math.round(filePreviewZoom * 100) + '%';
+        }
+        setFileMeta('Масштаб предпросмотра: ' + Math.round(filePreviewZoom * 100) + '%');
+    }
+
+    function scannerProfileText(profile) {
+        if (profile === 1) return 'Профиль 1: 300 dpi, grayscale';
+        if (profile === 2) return 'Профиль 2: 400/600 dpi, grayscale';
+        return 'Профиль 3: 400/600 dpi, color';
+    }
+
+    function updateScannerProfileLabel() {
+        if (!scannerProfileLabel) {
+            return;
+        }
+        scannerProfileLabel.textContent = scannerProfileText(currentScannerProfile);
+    }
+
+    async function moveCurrentFile() {
+        if (!currentFile) {
+            setFileMeta('Выберите файл из дерева.');
+            return;
+        }
+        const targetPath = window.prompt('Целевой путь для перемещения файла', currentFile);
+        if (!targetPath || !targetPath.trim()) {
+            return;
+        }
+        const data = await api(
+            '/arm/fs/move?source_rel_path=' + encodeURIComponent(currentFile) + '&target_rel_path=' + encodeURIComponent(targetPath.trim()),
+            { method: 'POST' }
+        );
+        setFileMeta(data.message || 'Файл перемещен.');
+        currentFile = targetPath.trim();
+        refreshRenderedPreview(currentFile);
+        const targetFolder = currentFile.split('/').slice(0, -1).join('/');
+        if (targetFolder) {
+            await loadTree(targetFolder).catch(() => {});
+        }
+    }
+
+    async function deleteCurrentFile() {
+        if (!currentFile) {
+            setFileMeta('Выберите файл из дерева.');
+            return;
+        }
+        const confirmed = window.confirm('Удалить файл: ' + describePath(currentFile) + '?');
+        if (!confirmed) {
+            return;
+        }
+        const data = await api('/arm/fs/delete?rel_path=' + encodeURIComponent(currentFile) + '&with_sidecar=true', { method: 'POST' });
+        setFileMeta(data.message || 'Файл удален.');
+        const folder = currentFile.split('/').slice(0, -1).join('/');
+        currentFile = '';
+        if (filePathLabel) {
+            filePathLabel.textContent = 'Файл не выбран';
+        }
+        if (fileEditor) {
+            fileEditor.value = '';
+            fileEditor.readOnly = true;
+        }
+        refreshRenderedPreview('');
+        if (folder) {
+            await loadTree(folder).catch(() => {});
+        }
     }
 
     function scannerEmployeeValue() {
@@ -8608,7 +8932,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 }
                 const ext = fileExtensionFromName(entry.name);
                 const typeLabel = ext ? ext.toUpperCase() : 'FILE';
-                if (ext === 'md' || ext === 'txt' || ext === 'csv' || ext === 'json' || ext === 'yml' || ext === 'yaml' || ext === 'py' || ext === 'log' || ext === 'ini' || ext === 'docx') {
+                if (ext === 'md' || ext === 'txt' || ext === 'csv' || ext === 'json' || ext === 'yml' || ext === 'yaml' || ext === 'py' || ext === 'log' || ext === 'ini') {
                     li.classList.add('tree-item-editable');
                 }
                 a.textContent = '[Файл ' + typeLabel + '] ' + prettyName;
@@ -8823,6 +9147,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 employee_id: employeeId || null,
                 device_index: Number((scannerDevices && scannerDevices.value) || 1),
                 image_format: 'jpg',
+                scan_profile: currentScannerProfile,
                 dpi: 300,
                 grayscale: false
             })
@@ -9451,10 +9776,31 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     fileSaveBtn.addEventListener('click', () => withBusy(fileSaveBtn, saveCurrentFile).catch((err) => setFileMeta('Ошибка сохранения: ' + err)));
     fileDownloadBtn.addEventListener('click', downloadCurrentFile);
     filePrintBtn.addEventListener('click', () => withBusy(filePrintBtn, printCurrentFile).catch((err) => setFileMeta('Ошибка печати: ' + err)));
+    if (fileZoomOutBtn) {
+        fileZoomOutBtn.addEventListener('click', () => setPreviewZoom(filePreviewZoom - 0.1));
+    }
+    if (fileZoomResetBtn) {
+        fileZoomResetBtn.addEventListener('click', () => setPreviewZoom(1));
+    }
+    if (fileZoomInBtn) {
+        fileZoomInBtn.addEventListener('click', () => setPreviewZoom(filePreviewZoom + 0.1));
+    }
+    if (fileMoveBtn) {
+        fileMoveBtn.addEventListener('click', () => withBusy(fileMoveBtn, moveCurrentFile).catch((err) => setFileMeta('Ошибка перемещения: ' + err)));
+    }
+    if (fileDeleteBtn) {
+        fileDeleteBtn.addEventListener('click', () => withBusy(fileDeleteBtn, deleteCurrentFile).catch((err) => setFileMeta('Ошибка удаления: ' + err)));
+    }
     if (fileSourceToggleBtn) {
         fileSourceToggleBtn.addEventListener('click', () => {
             fileSourceVisible = !fileSourceVisible;
             updateFileSourceVisibility();
+        });
+    }
+    if (scannerProfile) {
+        scannerProfile.addEventListener('input', () => {
+            currentScannerProfile = Math.max(1, Math.min(3, Number(scannerProfile.value) || 1));
+            updateScannerProfileLabel();
         });
     }
     scanBtn.addEventListener('click', () => withBusy(scanBtn, scanToInbox).catch((err) => {
@@ -9475,6 +9821,17 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         manualReview.textContent = 'Ошибка классификации: ' + err;
         setInteractionHint('Ошибка классификации ручного разбора: ' + err, 'error');
     }));
+    if (recompressScansBtn) {
+        recompressScansBtn.addEventListener('click', () => withBusy(recompressScansBtn, async () => {
+            const data = await api('/arm/scanner/recompress-history', { method: 'POST' }, TIMEOUTS_MS.scanner);
+            scannerMsg.textContent = data.message || 'Оптимизация сканов завершена.';
+            appendScannerTimeline(data.message || 'Оптимизация исторических сканов завершена.');
+            setInteractionHint('Оптимизация сканов завершена.', 'ok');
+        }).catch((err) => {
+            scannerMsg.textContent = 'Ошибка оптимизации сканов: ' + err;
+            setInteractionHint('Не удалось оптимизировать исторические сканы: ' + err, 'error');
+        }));
+    }
     if (manualReviewOpenBtn) {
         manualReviewOpenBtn.addEventListener('click', () => withBusy(manualReviewOpenBtn, openSelectedManualReview).catch((err) => {
             setInteractionHint('Не удалось открыть файл ручного разбора: ' + err, 'error');
@@ -9771,6 +10128,9 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         setEmployeeChecklistMsg('Не удалось загрузить список сотрудников: ' + err, 'error');
     });
     syncScannerRequirements();
+    currentScannerProfile = Math.max(1, Math.min(3, Number(scannerProfile && scannerProfile.value) || 1));
+    updateScannerProfileLabel();
+    setPreviewZoom(1);
     initVoiceInput();
     window.addEventListener('beforeunload', () => {
         if (voiceListening) {
@@ -9906,6 +10266,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     .required-input {{ border-color: #f59e0b; box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.15); }}
     textarea {{ min-height: 220px; resize: vertical; font-family: Consolas, "Courier New", monospace; }}
     .is-hidden {{ display: none !important; }}
+    #fileRenderWrap {{ width: 100%; overflow: auto; border-radius: 10px; }}
     #fileRenderFrame {{ width: 100%; min-height: 66vh; border: 1px solid #d8e0e0; border-radius: 10px; background: #fff; margin-top: 10px; }}
     pre {{ background: #f8fbfb; border: 1px solid #d8e0e0; border-radius: 10px; padding: 10px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; font-size: 13px; }}
     .inline-grid {{ display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 8px; margin-top: 8px; }}
@@ -9940,6 +10301,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     .employee-checklist-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
     #todoMainCard {{ grid-column: 1 / -1; }}
     #structureCard {{ grid-column: 1; }}
+    #uploadCard {{ grid-column: 1; }}
     #previewCard {{ grid-column: 2; }}
     #employeeChecklistCard {{ grid-column: 1 / -1; }}
     .employee-checklist-head h2 {{ margin: 0; }}
@@ -9973,6 +10335,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             <a class=\"site-nav-link\" href=\"/arm/employees\">Сотрудники</a>
             <a class=\"site-nav-link\" href=\"/arm/checklist/view\">Чеклист</a>
             <a class=\"site-nav-link\" href=\"/arm/permit/height\">Наряд высота</a>
+            <a class=\"site-nav-link\" href=\"/arm/aosr\">АОСР</a>
             <a class=\"site-nav-link\" href=\"/arm/todo/view\">План дня</a>
             <a class=\"site-nav-link\" href=\"/arm/periodic/view\">Периодические</a>
             <a class=\"site-nav-link\" href=\"/docs\" target=\"_blank\" rel=\"noopener\">API</a>
@@ -10046,17 +10409,38 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 </div>
             </div>
         </article>
+        <article class=\"card\" id=\"uploadCard\">
+            <h2>Загрузить файл на объект</h2>
+            <div class=\"system-hint\">Загрузите DOCX/PDF или скан в любую папку объекта. Загруженные DOCX-шаблоны сразу доступны в файловом дереве.</div>
+            <div class=\"actions\" style=\"margin-top:8px; flex-wrap:wrap;\">
+                <input id=\"uploadDir\" placeholder=\"Папка назначения, напр. 06_normative_base\" style=\"flex:2; min-width:200px;\" />
+                <input type=\"file\" id=\"uploadFile\" accept=\".docx,.pdf,.png,.jpg,.jpeg,.tiff,.tif,.xlsx\" style=\"flex:2; min-width:180px;\" />
+                <button class=\"btn\" id=\"uploadBtn\" type=\"button\">Загрузить</button>
+            </div>
+            <div class=\"actions\" style=\"margin-top:8px;\">
+                <button class=\"btn secondary\" id=\"uploadUseCurrentBtn\" type=\"button\">Взять текущую папку из дерева</button>
+                <label class=\"meta\" style=\"display:flex; gap:6px; align-items:center;\"><input id=\"uploadAutoUseTree\" type=\"checkbox\" checked />Авто-синхронизация папки с деревом</label>
+            </div>
+            <div class=\"meta\" id=\"uploadMsg\">Выберите файл и папку назначения.</div>
+        </article>
         <article class=\"card\" id=\"previewCard\">
             <h2>Предпросмотр, правка, печать</h2>
             <div class=\"system-hint\">Системная подсказка: для крупных файлов используйте «Скачать», а не онлайн-редактирование.</div>
             <div class=\"meta\" id=\"filePath\">Файл не выбран</div>
-            <iframe id=\"fileRenderFrame\" title=\"Рендер файла\" src=\"about:blank\"></iframe>
+            <div class="actions" style="margin-top:8px;">
+                <button class="btn secondary mini" id="fileZoomOutBtn" type="button">- Зум</button>
+                <button class="btn secondary mini" id="fileZoomResetBtn" type="button">100%</button>
+                <button class="btn secondary mini" id="fileZoomInBtn" type="button">+ Зум</button>
+            </div>
+            <div id="fileRenderWrap"><iframe id="fileRenderFrame" title="Рендер файла" src="about:blank"></iframe></div>
             <textarea id=\"fileEditor\" placeholder=\"Содержимое текстового файла\"></textarea>
             <div class=\"actions\">
                 <button class=\"btn secondary\" id=\"fileSourceToggleBtn\" type=\"button\">Показать исходник</button>
                 <button class=\"btn secondary\" id=\"fileSaveBtn\">Сохранить</button>
                 <button class=\"btn secondary\" id=\"fileDownloadBtn\">Скачать</button>
                 <button class=\"btn secondary\" id=\"filePrintBtn\">Печать</button>
+                <button class="btn secondary" id="fileMoveBtn" type="button">Переместить</button>
+                <button class="btn secondary" id="fileDeleteBtn" type="button">Удалить</button>
             </div>
             <div class=\"meta\" id=\"fileMeta\">Ожидание</div>
         </article>
@@ -10145,12 +10529,18 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 <input id=\"scannerEmployee\" list=\"scannerEmployeeSuggestions\" placeholder=\"Код сотрудника (для удостоверения/протокола)\" />
                 <datalist id=\"scannerEmployeeSuggestions\"></datalist>
             </div>
+            <div class=\"actions\" style=\"margin-top:8px; align-items:center; gap:10px; flex-wrap:wrap;\">
+                <label class=\"meta\" for=\"scannerProfile\" style=\"min-width:120px;\">Профиль скана:</label>
+                <input id=\"scannerProfile\" type=\"range\" min=\"1\" max=\"3\" step=\"1\" value=\"1\" style=\"max-width:280px;\" />
+                <span class=\"meta\" id=\"scannerProfileLabel\">Профиль 1: 300 dpi, grayscale</span>
+            </div>
             <div class=\"meta\" id=\"scannerEmployeeHint\">Выберите папку сотрудника, чтобы подставить код автоматически.</div>
             <div class=\"system-hint\" id=\"scannerHint\">Режим приказа/акта: код сотрудника можно не заполнять.</div>
             <div class=\"actions\">
                 <button class=\"btn secondary\" id=\"scanBtn\">Сканировать во входящую папку</button>
                 <button class=\"btn secondary\" id=\"ingestBtn\">Распознать и разложить</button>
                 <button class=\"btn secondary\" id=\"manualClassifyBtn\">Классифицировать ручной разбор</button>
+                <button class=\"btn secondary\" id=\"recompressScansBtn\" type=\"button\">Сжать исторические сканы</button>
                 <button class=\"btn secondary\" id=\"maintenanceResetBtn\" type=\"button\">Service: reset + rebuild</button>
             </div>
             <div class=\"scanner-progress\"><div class=\"scanner-progress-bar\" id=\"scannerProgressBar\"></div></div>
@@ -10220,20 +10610,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 <button class=\"btn secondary\" id=\"pprImportBtn\" type=\"button\">Импортировать ППР в базу</button>
             </div>
             <div class=\"meta\" id=\"objectProfileMsg\">Загрузка карточки объекта...</div>
-        </article>
-        <article class=\"card\" id=\"uploadCard\">
-            <h2>Загрузить файл на объект</h2>
-            <div class=\"system-hint\">Загрузите DOCX/PDF или скан в любую папку объекта. Загруженные DOCX-шаблоны сразу доступны в файловом дереве.</div>
-            <div class=\"actions\" style=\"margin-top:8px; flex-wrap:wrap;\">
-                <input id=\"uploadDir\" placeholder=\"Папка назначения, напр. 06_normative_base\" style=\"flex:2; min-width:200px;\" />
-                <input type=\"file\" id=\"uploadFile\" accept=\".docx,.pdf,.png,.jpg,.jpeg,.tiff,.tif,.xlsx\" style=\"flex:2; min-width:180px;\" />
-                <button class=\"btn\" id=\"uploadBtn\" type=\"button\">Загрузить</button>
-            </div>
-            <div class=\"actions\" style=\"margin-top:8px;\">
-                <button class=\"btn secondary\" id=\"uploadUseCurrentBtn\" type=\"button\">Взять текущую папку из дерева</button>
-                <label class=\"meta\" style=\"display:flex; gap:6px; align-items:center;\"><input id=\"uploadAutoUseTree\" type=\"checkbox\" checked />Авто-синхронизация папки с деревом</label>
-            </div>
-            <div class=\"meta\" id=\"uploadMsg\">Выберите файл и папку назначения.</div>
         </article>
         <article class=\"card\" id=\"assistantCard\">
             <h2>Ассистент (локальная LLM и Copilot)</h2>

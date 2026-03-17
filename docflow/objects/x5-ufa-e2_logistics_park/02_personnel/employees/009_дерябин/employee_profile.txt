@@ -1,0 +1,8 @@
+employee_id: 009
+last_name: Дерябин
+first_name: Кирилл
+middle_name: Алексеевич
+position: Монтажник стальных и железобетонных конструкций
+grade: по удостоверению
+birth_date: 2000-07-04
+team: Монтажная бригада

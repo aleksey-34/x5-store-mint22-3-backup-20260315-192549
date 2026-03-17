@@ -1,0 +1,109 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "Get-PSDrive": true,
+        "/^Get-Location \\| Out-String; 'HAS_DOT_GIT=' \\+ \\(Test-Path \\.git\\); if \\(Get-Command git -ErrorAction SilentlyContinue\\) \\{ git rev-parse --is-inside-work-tree 2>\\$null; if \\(\\$LASTEXITCODE -ne 0\\) \\{ 'NO_GIT_REPO' \\} else \\{ git status --short \\} \\} else \\{ 'GIT_NOT_INSTALLED' \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^winget install -e --id Git\\.Git --accept-package-agreements --accept-source-agreements --disable-interactivity --silent$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$gitCmd = Get-Command git -ErrorAction SilentlyContinue; if \\(\\$gitCmd\\) \\{ 'GIT_PATH=' \\+ \\$gitCmd\\.Source; git --version \\} elseif \\(Test-Path 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe'\\) \\{ 'GIT_PATH=C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe'; & 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe' --version \\} else \\{ 'GIT_NOT_FOUND_AFTER_INSTALL' \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^& 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe' init -b main; & 'C:\\\\Program Files\\\\Git\\\\cmd\\\\git\\.exe' status --short$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$root='docflow/objects/x5-ufa-e2_logistics_park'; Get-ChildItem -Path \\$root -Directory \\| ForEach-Object \\{ \\$count=\\(Get-ChildItem -Path \\$_\\.FullName -Recurse -File -ErrorAction SilentlyContinue\\)\\.Count; \\[PSCustomObject\\]@\\{ Folder=\\$_\\.Name; FileCount=\\$count \\} \\} \\| Sort-Object Folder \\| Format-Table -AutoSize \\| Out-String$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git rev-parse --show-toplevel; git rev-parse --is-inside-work-tree; git status -sb -uno; \\(git status --porcelain=v1 -uno \\| Measure-Object\\)\\.Count$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\.\\\\\\.venv\\\\Scripts\\\\python\\.exe -m pytest -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$name=\\(git config --get user\\.name\\); \\$email=\\(git config --get user\\.email\\); if\\(-not \\$name\\)\\{ git config user\\.name \"Stanok\" \\}; if\\(-not \\$email\\)\\{ git config user\\.email \"stanok@local\" \\}; git add \\.; git commit -m \"Initial project baseline\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue \\| Select-Object LocalAddress,LocalPort,OwningProcess,State \\| Format-Table -AutoSize \\| Out-String$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Get-Process uvicorn,python -ErrorAction SilentlyContinue \\| Select-Object Name,Id,CPU,StartTime,Path \\| Format-Table -AutoSize \\| Out-String$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Get-Process \\| Where-Object \\{ \\$_\\.ProcessName -match 'uvicorn\\|python' \\} \\| Select-Object ProcessName,Id,CPU,StartTime,Path \\| Format-Table -AutoSize \\| Out-String -Width 1000$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Get-NetTCPConnection -LocalPort 8000,11434 -State Listen -ErrorAction SilentlyContinue \\| Select-Object LocalAddress,LocalPort,OwningProcess \\| Format-Table -AutoSize \\| Out-String$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\.\\\\\\.venv\\\\Scripts\\\\python\\.exe -m pytest tests\\\\test_arm_admin\\.py -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\$root = 'docflow/objects/x5-ufa-e2_logistics_park'; if \\(Test-Path \\$root\\) \\{ \\$py = @'\nfrom pathlib import Path\nfrom app\\.services\\.office_export import OfficeDocxExportResult, OfficeXlsxExportResult, build_office_pack_zip\n\nroot = Path\\(r\"docflow/objects/x5-ufa-e2_logistics_park\"\\)\\.resolve\\(\\)\noffice = root / \"01_orders_and_appointments\" / \"print_office\"\ndocx_dir = office / \"docx\"\ndocx_dir\\.mkdir\\(parents=True, exist_ok=True\\)\ndocx_bundle = office / \"__smoke_docx_bundle\\.zip\"\nxlsx_file = office / \"__smoke_registers\\.xlsx\"\nif not docx_bundle\\.exists\\(\\):\n    docx_bundle\\.write_bytes\\(b\"zip\"\\)\nif not xlsx_file\\.exists\\(\\):\n    xlsx_file\\.write_bytes\\(b\"xlsx\"\\)\nres = build_office_pack_zip\\(root, OfficeDocxExportResult\\(output_dir=docx_dir, bundle_path=docx_bundle, files_count=0\\), OfficeXlsxExportResult\\(file_path=xlsx_file\\)\\)\nprint\\(str\\(res\\)\\)\n'@; \\.\\\\\\.venv\\\\Scripts\\\\python\\.exe -c \\$py \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^if \\(Test-Path 'docflow/objects/x5-ufa-e2_logistics_park/01_orders_and_appointments/print_office/офисный_пакет_печати\\.zip'\\) \\{ Add-Type -AssemblyName System\\.IO\\.Compression\\.FileSystem; \\$zip='docflow/objects/x5-ufa-e2_logistics_park/01_orders_and_appointments/print_office/офисный_пакет_печати\\.zip'; \\$z=\\[System\\.IO\\.Compression\\.ZipFile\\]::OpenRead\\(\\(Resolve-Path \\$zip\\)\\); \\$scan = \\$z\\.Entries \\| Where-Object \\{ \\$_\\.FullName -like 'scans/02_personnel/employees/\\*' \\} \\| Select-Object -First 5 -ExpandProperty FullName; \\$z\\.Dispose\\(\\); \\$scan \\| Out-String \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^powershell -NoProfile -ExecutionPolicy Bypass -File \\.\\\\scripts\\\\run_api_clean\\.ps1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Rename-Item \"c:\\\\Users\\\\Stanok\\\\Desktop\\\\Рабочая Алексей\\\\X5_Store\\\\docflow\\\\objects\\\\x5-ufa-e2_logistics_park\\\\01_orders_and_appointments\\\\20260301_ORDER_11_тб_якупов_v01\\.md\" \"20260301_ORDER_11_ответственные_лица_по_пс_v01\\.md\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Push-Location \"c:\\\\Users\\\\Stanok\\\\Desktop\\\\Рабочая Алексей\\\\X5_Store\\\\docflow\\\\objects\\\\x5-ufa-e2_logistics_park\\\\01_orders_and_appointments\"; Get-ChildItem -Filter \"\\*ORDER_11\\*\" \\| Select-Object Name; Pop-Location$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Rename-Item -Path \"\\.\\\\docflow\\\\objects\\\\x5-ufa-e2_logistics_park\\\\01_orders_and_appointments\\\\20260301_ORDER_11_тб_якупов_v01\\.md\" -NewName \"20260301_ORDER_11_ответственные_лица_по_пс_v01\\.md\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Get-Location; git rev-parse --is-inside-work-tree; git rev-parse --show-toplevel; git status --short; git remote -v; git branch --show-current; gh --version; gh auth status$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git config --get user\\.name; git config --get user\\.email; git config --get credential\\.helper; Get-ChildItem Env:GITHUB\\*$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git credential-manager --version; git credential-manager github --help$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git credential-manager github list$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git credential-manager github login$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git credential-manager github list; Write-Output \"exit:\\$LASTEXITCODE\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^git add -A; git update-index --chmod=\\+x scripts/run_api_clean\\.sh scripts/setup_linux_mint_22_3\\.sh; git commit -m \"chore: workspace backup \\+ Linux Mint 22\\.3 prep \\+ chat history snapshot\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

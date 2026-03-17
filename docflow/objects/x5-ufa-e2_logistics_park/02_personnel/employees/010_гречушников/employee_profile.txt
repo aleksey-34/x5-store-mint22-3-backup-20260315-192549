@@ -1,0 +1,6 @@
+employee_id: 010
+last_name: Гречушников
+first_name: Антон
+middle_name: Владимирович
+position: Монтажник стальных и железобетонных конструкций
+birth_date: 30.01.1998

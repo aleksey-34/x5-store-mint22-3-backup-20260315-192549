@@ -1,0 +1,6 @@
+employee_id: 017
+last_name: Бикбулатов
+first_name: Артур
+middle_name: Римович
+position: Геодезист
+birth_date: 05.09.1986

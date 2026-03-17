@@ -1,0 +1,8 @@
+employee_id: 001
+last_name: Гречушников
+first_name: Денис
+middle_name: Владимирович
+position: Прораб
+grade: по удостоверению
+birth_date: 1990-03-27
+team: Основной состав

@@ -1,0 +1,32 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run FastAPI API",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\scripts\\run_api_clean.ps1"
+			],
+			"isBackground": true,
+			"group": "build"
+		},
+		{
+			"label": "Run FastAPI API (Linux Mint)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"./scripts/run_api_clean.sh",
+				"--port",
+				"8000",
+				"--reload"
+			],
+			"isBackground": true,
+			"group": "build"
+		}
+	]
+}

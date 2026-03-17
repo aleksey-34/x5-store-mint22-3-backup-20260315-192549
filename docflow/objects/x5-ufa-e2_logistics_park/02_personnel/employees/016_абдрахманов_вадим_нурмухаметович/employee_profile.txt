@@ -1,0 +1,6 @@
+employee_id: 016
+last_name: Абдрахманов
+first_name: Вадим
+middle_name: Нурмухаметович
+position: Стропальщик
+birth_date: 29.03.1987

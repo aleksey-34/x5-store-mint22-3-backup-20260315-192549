@@ -1,0 +1,8 @@
+employee_id: 002
+last_name: Мельников
+first_name: Алексей
+middle_name: Васильевич
+position: Стропальщик
+grade: по удостоверению
+birth_date: 1975-04-02
+team: Основной состав

@@ -1,0 +1,5 @@
+pattern,action_type,target,priority,responsible_role,sla_hours,notes
+"наряд-допуск|permit","create_journal_task","permit_register",1,"hse_engineer",4,"High-risk work permit processing"
+"сварк|weld","create_journal_task","welding_journal",2,"welding_supervisor",8,"Update welding logs"
+"микротравм|травм","create_incident_task","incident_registry",1,"hse_engineer",2,"Immediate HSE reaction"
+"огнетушител","create_check_task","fire_equipment_check",2,"fire_safety_responsible",24,"Verify extinguisher check status"

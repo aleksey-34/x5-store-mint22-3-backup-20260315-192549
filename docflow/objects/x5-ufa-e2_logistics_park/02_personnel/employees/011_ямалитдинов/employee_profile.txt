@@ -1,0 +1,8 @@
+employee_id: 011
+last_name: Ямалитдинов
+first_name: Алексей
+middle_name: Нагимжанович
+position: Электрогазосварщик
+grade: по удостоверению
+birth_date: 1998-07-26
+team: Сварочная бригада

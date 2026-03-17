@@ -1,0 +1,8 @@
+employee_id: 008
+last_name: Власов
+first_name: Кирилл
+middle_name: Андреевич
+position: Монтажник стальных и железобетонных конструкций
+grade: по удостоверению
+birth_date: 2001-01-09
+team: Монтажная бригада

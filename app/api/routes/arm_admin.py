@@ -103,27 +103,53 @@ DOC_STATUS_LABELS: dict[str, str] = {
 }
 
 
+def _extract_order_info_from_rel_path(rel_path: str) -> tuple[str, str]:
+    safe = (rel_path or "").strip().replace("\\", "/")
+    if not safe:
+        return "", ""
+
+    stem = PurePosixPath(safe).stem
+    match = re.search(r"ORDER[_-]?([0-9]{1,3})(?:[_-](.*))?", stem, flags=re.IGNORECASE)
+    if not match:
+        return "", ""
+
+    order_no = (match.group(1) or "").strip()
+    if order_no.isdigit():
+        order_no = order_no.zfill(2)
+
+    title_tail = (match.group(2) or "").strip()
+    title_tail = re.sub(r"[_-]?v[0-9]+$", "", title_tail, flags=re.IGNORECASE).strip(" _-")
+    title_tail = re.sub(r"[_-]+", " ", title_tail)
+    title_tail = re.sub(r"\s+", " ", title_tail).strip()
+    if title_tail:
+        title_tail = title_tail[0].upper() + title_tail[1:]
+
+    return order_no, title_tail
+
+
 def _extract_order_header_info(root: Path, rel_path: str) -> tuple[str, str]:
     if not rel_path:
         return "", ""
     suffix = PurePosixPath(rel_path).suffix.lower()
     if suffix not in {".md", ".txt", ".html"}:
-        return "", ""
+        return _extract_order_info_from_rel_path(rel_path)
 
     try:
         target = _resolve_safe_path(root=root, rel_path=rel_path)
         if not target.exists() or not target.is_file():
-            return "", ""
+            return _extract_order_info_from_rel_path(rel_path)
         text = target.read_text(encoding="utf-8", errors="ignore")
     except Exception:  # noqa: BLE001
-        return "", ""
+        return _extract_order_info_from_rel_path(rel_path)
 
     order_no = ""
     order_title = ""
 
-    no_match = re.search(r"Приказ\s*[№N]\s*([0-9]+\s*/\s*СМР-\d{4})", text, flags=re.IGNORECASE)
+    no_match = re.search(r"Приказ\s*[№N]\s*([0-9]{1,3}(?:\s*/\s*[А-ЯA-ZЁ]{2,6}-\d{4})?)", text, flags=re.IGNORECASE)
     if no_match:
         order_no = re.sub(r"\s+", "", no_match.group(1).replace("№", "")).strip()
+        if order_no.isdigit():
+            order_no = order_no.zfill(2)
 
     quoted_match = re.search(r"[«\"]\s*О\s+([^»\"\n]+)[»\"]", text, flags=re.IGNORECASE)
     if quoted_match:
@@ -132,6 +158,12 @@ def _extract_order_header_info(root: Path, rel_path: str) -> tuple[str, str]:
         h2_match = re.search(r"^##\s+(О\s+.+)$", text, flags=re.IGNORECASE | re.MULTILINE)
         if h2_match:
             order_title = h2_match.group(1).strip()
+
+    fallback_no, fallback_title = _extract_order_info_from_rel_path(rel_path)
+    if not order_no:
+        order_no = fallback_no
+    if not order_title:
+        order_title = fallback_title
 
     return order_no, order_title
 
@@ -474,7 +506,7 @@ PPR_CONTEXT_REL_PATH = "06_normative_base/ppr_imports/ppr_context_columns.md"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCANNER_COMMAND_TIMEOUT_SEC = 240
 MAX_TEXT_PREVIEW_BYTES = 1_500_000
-UPLOAD_ALLOWED_EXTENSIONS = {".docx", ".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif"}
+UPLOAD_ALLOWED_EXTENSIONS = {".docx", ".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".xlsx"}
 UPLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 TEXT_PREVIEW_EXTENSIONS = {
     ".md",
@@ -551,6 +583,29 @@ MANUAL_REVIEW_TARGET_BY_DOC_TYPE: dict[str, str] = {
     "hidden_work_act": "05_execution_docs/hidden_work_acts",
     "employee_passport": "02_personnel/employees",
     "unknown": "10_scan_inbox/manual_review",
+}
+
+SCANNER_DOC_TYPES: dict[str, str] = {
+    "ORDER": "Приказ",
+    "AWR": "Акт выполненных работ",
+    "PASSPORT": "Удостоверение/протокол",
+    "INVOICE": "Счет",
+    "UPD": "УПД",
+    "TTN": "ТТН",
+    "ACT": "Акт",
+    "OTHER": "Другое",
+}
+SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE: set[str] = {"PASSPORT"}
+
+MANUAL_REVIEW_TARGET_BY_SCAN_TYPE: dict[str, str] = {
+    "ORDER": "01_orders_and_appointments",
+    "AWR": "05_execution_docs/work_reports",
+    "PASSPORT": "02_personnel/employees",
+    "INVOICE": "08_outgoing_submissions/бухгалтерия/счета",
+    "UPD": "08_outgoing_submissions/бухгалтерия/упд",
+    "TTN": "08_outgoing_submissions/логистика/ттн",
+    "ACT": "05_execution_docs/admission_acts",
+    "OTHER": "10_scan_inbox/manual_review",
 }
 
 MAINTENANCE_STATIC_FOLDERS: tuple[str, ...] = (
@@ -1383,6 +1438,30 @@ def _infer_profession_key(profession: str) -> str:
 def _suggest_manual_review_target(predicted_doc_type: str) -> str:
     normalized = (predicted_doc_type or "").strip().lower()
     return MANUAL_REVIEW_TARGET_BY_DOC_TYPE.get(normalized, MANUAL_REVIEW_TARGET_BY_DOC_TYPE["unknown"])
+
+
+def _extract_scan_subject_tag(file_name: str) -> str:
+    name = (file_name or "").strip()
+    match = re.match(r"^\d{8}__([A-Z0-9_]+)__([^\.]+)", name)
+    if not match:
+        return ""
+    return (match.group(2) or "").strip().lower()
+
+
+def _detect_scan_doc_type_from_name(file_name: str) -> str:
+    name = (file_name or "").strip()
+    match = re.match(r"^\d{8}__([A-Z0-9_]+)__", name)
+    if not match:
+        return "OTHER"
+    scan_doc_type = (match.group(1) or "").upper().strip()
+    if scan_doc_type not in SCANNER_DOC_TYPES:
+        return "OTHER"
+    return scan_doc_type
+
+
+def _suggest_manual_review_target_from_scan_name(file_name: str) -> str:
+    scan_doc_type = _detect_scan_doc_type_from_name(file_name)
+    return MANUAL_REVIEW_TARGET_BY_SCAN_TYPE.get(scan_doc_type, MANUAL_REVIEW_TARGET_BY_SCAN_TYPE["OTHER"])
 
 
 def _collect_rule_matches(target_folder: Path, patterns: tuple[str, ...]) -> list[Path]:
@@ -4134,6 +4213,15 @@ async def arm_fs_upload(
     return ArmActionResponse(ok=True, message=f"Загружено: {rel_path}")
 
 
+@router.post("/fs/mkdir", response_model=ArmActionResponse)
+def arm_fs_mkdir(rel_path: str = "") -> ArmActionResponse:
+    root = resolve_object_root()
+    target = _resolve_safe_path(root=root, rel_path=rel_path)
+    target.mkdir(parents=True, exist_ok=True)
+    normalized = _to_rel_path(root, target) if target != root else ""
+    return ArmActionResponse(ok=True, message=f"Папка готова: {normalized or '/'}")
+
+
 @router.get("/fs/download")
 def arm_fs_download(rel_path: str) -> FileResponse:
     root = resolve_object_root()
@@ -4372,7 +4460,15 @@ def arm_scanner_devices() -> ArmScannerDevicesResponse:
 def arm_scanner_scan_to_inbox(payload: ArmScanCaptureRequest) -> ArmActionResponse:
     root = resolve_object_root()
 
-    if payload.doc_type == "PASSPORT" and not (payload.employee_id or "").strip():
+    doc_type = (payload.doc_type or "").upper().strip()
+    if doc_type not in SCANNER_DOC_TYPES:
+        allowed = ", ".join(sorted(SCANNER_DOC_TYPES.keys()))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Неизвестный тип скана '{payload.doc_type}'. Разрешены: {allowed}",
+        )
+
+    if doc_type in SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE and not (payload.employee_id or "").strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Для типа «Удостоверение/протокол» заполните код сотрудника.",
@@ -4383,7 +4479,7 @@ def arm_scanner_scan_to_inbox(payload: ArmScanCaptureRequest) -> ArmActionRespon
         "--object-root",
         str(root),
         "--doc-type",
-        payload.doc_type,
+        doc_type,
         "--subject",
         payload.subject,
         "--device-index",
@@ -4450,10 +4546,17 @@ def arm_scan_manual_review() -> list[dict[str, object]]:
         sidecar = file.with_suffix(f"{file.suffix}.ocr.txt")
         ocr_text = sidecar.read_text(encoding="utf-8", errors="ignore") if sidecar.exists() else None
         pred = classify_scan_candidate(filename=file.name, ocr_text=ocr_text)
-        suggested_target = _suggest_manual_review_target(pred.predicted_doc_type)
+        scan_doc_type = _detect_scan_doc_type_from_name(file.name)
+        scan_subject_tag = _extract_scan_subject_tag(file.name)
+        suggested_target = _suggest_manual_review_target_from_scan_name(file.name)
+        if suggested_target == MANUAL_REVIEW_TARGET_BY_SCAN_TYPE["OTHER"]:
+            suggested_target = _suggest_manual_review_target(pred.predicted_doc_type)
+        suggested_target = f"{suggested_target.rstrip('/')}/{file.name}" if suggested_target else file.name
         items.append(
             {
                 "rel_path": _to_rel_path(root, file),
+                "scan_doc_type": scan_doc_type,
+                "scan_subject_tag": scan_subject_tag,
                 "predicted_doc_type": pred.predicted_doc_type,
                 "confidence": pred.confidence,
                 "source": pred.source,
@@ -4825,6 +4928,13 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
     for doc in documents:
         rel_path = (doc.file_path or "").strip()
         order_no, order_title = _extract_order_header_info(root, rel_path)
+        display_title = (doc.title or "").strip()
+        if order_no or order_title:
+            display_title = (("Приказ №" + order_no) if order_no else "").strip()
+            if order_title:
+                display_title = (display_title + " - " + order_title) if display_title else order_title
+        if not display_title:
+            display_title = "Документ"
         actions = "<span class=\"meta\">Путь не указан</span>"
         if rel_path:
             actions = _arm_file_actions_html(rel_path, back_href="/arm/structure/view")
@@ -4849,7 +4959,7 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
         rows.append(
             "<tr>"
             f"<td>{escape(str(doc.id))}</td>"
-            f"<td>{escape(doc.title)}</td>"
+            f"<td>{escape(display_title)}</td>"
             f"<td>{escape(order_no or '—')}</td>"
             f"<td>{escape(order_title or '—')}</td>"
             f"<td>{escape(doc.doc_type)}</td>"
@@ -4878,15 +4988,35 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
         "<div class=\"meta\">Управление статусами документов в БД: зеленая галочка — утверждено, синяя — вновь создано, желтая шестеренка — требует исправления.</div>"
         '<div id="structureStatusMsg" class="meta" style="margin-top:8px;">Готово к изменениям.</div>'
         "<style>"
-        ".status-badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;font-weight:700}"
+        ".structure-table{width:100%;table-layout:fixed}"
+        ".structure-table th,.structure-table td{padding:6px 8px;font-size:12px;line-height:1.2;vertical-align:top}"
+        ".structure-table th{font-size:11px}"
+        ".structure-table td:nth-child(1){width:48px}"
+        ".structure-table td:nth-child(2){width:220px}"
+        ".structure-table td:nth-child(3){width:72px}"
+        ".structure-table td:nth-child(4){width:180px}"
+        ".structure-table td:nth-child(5){width:74px}"
+        ".structure-table td:nth-child(6){width:120px}"
+        ".structure-table td:nth-child(7){width:112px}"
+        ".structure-table td:nth-child(8){width:170px}"
+        ".structure-table td:nth-child(9){width:132px}"
+        ".structure-table td:nth-child(10){width:130px}"
+        ".structure-table td:nth-child(11){width:152px}"
+        ".structure-table td:nth-child(12){width:132px}"
+        ".status-badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;line-height:1.15}"
         ".status-approved{background:#dcfce7;color:#166534}"
         ".status-new{background:#dbeafe;color:#1d4ed8}"
         ".status-fix{background:#fef3c7;color:#b45309}"
         ".status-delete{background:#fee2e2;color:#991b1b}"
         ".status-keep{background:#e2e8f0;color:#1e293b}"
-        ".status-select,.fix-input{width:100%;box-sizing:border-box}"
+        ".status-select,.fix-input{width:100%;min-width:120px;box-sizing:border-box;padding:6px 8px;font-size:12px}"
+        ".fix-input{min-width:160px}"
+        ".action-links{display:grid;gap:6px}"
+        ".action-links .btn-inline{width:100%;min-width:140px;padding:6px 10px;font-size:12px;line-height:1.2}"
+        "td .btn-inline{padding:6px 10px;font-size:12px;line-height:1.2;min-width:110px}"
+        "@media (max-width: 1400px){.structure-table{table-layout:auto}}"
         "</style>"
-        "<table><thead><tr>"
+        "<table class=\"structure-table\"><thead><tr>"
         "<th>ID</th><th>Документ</th><th>№ приказа</th><th>Наименование из шапки</th><th>Тип</th><th>Статус</th><th>Удаление</th><th>Что исправить</th><th>Новый статус</th><th>Действие</th><th>Управление</th><th>Файл</th>"
         "</tr></thead>"
         f"<tbody>{rows_html}</tbody></table>"
@@ -5433,15 +5563,27 @@ def arm_height_permit_html() -> HTMLResponse:
     metadata = _read_project_metadata(root)
     catalog = _build_employee_catalog(root=root)
 
-    employees = [
-        {
-            "name": item.employee_name,
-            "position": item.position or item.profession_label,
-            "rel_path": item.employee_rel_path,
-        }
-        for item in catalog.items
-        if item.employee_name
-    ]
+    employees: list[dict[str, str]] = []
+    for item in catalog.items:
+        if not item.employee_name:
+            continue
+        team_name = "Без указания бригады"
+        try:
+            employee_root = _resolve_safe_path(root=root, rel_path=item.employee_rel_path)
+            if employee_root.exists() and employee_root.is_dir():
+                profile = _read_employee_profile(employee_root)
+                team_name = (profile.get("team") or team_name).strip()
+        except Exception:  # noqa: BLE001
+            pass
+
+        employees.append(
+            {
+                "name": item.employee_name,
+                "position": item.position or item.profession_label,
+                "rel_path": item.employee_rel_path,
+                "team": team_name,
+            }
+        )
     employees.sort(key=lambda item: item["name"].lower())
 
     supervisors = [
@@ -5472,8 +5614,9 @@ def arm_height_permit_html() -> HTMLResponse:
 
     employee_options_html = "".join(
         f'<label class="permit-employee-option"><input type="checkbox" class="permit-employee-checkbox" '
-        f'data-name="{escape(item["name"])}" data-position="{escape(item["position"] or "")}" checked />'
-        f'<span>{escape(item["name"])}<small>{escape(item["position"] or "")}</small></span></label>'
+        f'data-name="{escape(item["name"])}" data-position="{escape(item["position"] or "")}" '
+        f'data-team="{escape(item["team"] or "")}" checked />'
+        f'<span>{escape(item["name"])}<small>{escape(item["position"] or "")} | {escape(item["team"] or "")}</small></span></label>'
         for item in employees
     )
     crew_row_count = 12
@@ -5544,7 +5687,10 @@ def arm_height_permit_html() -> HTMLResponse:
             <h3>ППР-контекст</h3>
             <textarea id=\"permitPprContext\" class=\"permit-side-text\">{escape(ppr_context)}</textarea>
             <h3>Состав бригады</h3>
+            <select id=\"permitForemanSelect\" class=\"permit-side-select\"></select>
+            <select id=\"permitTeamSelect\" class=\"permit-side-select\"></select>
             <div class=\"permit-employee-list\">{employee_options_html}</div>
+            <button type=\"button\" class=\"btn-inline\" id=\"permitApplyForemanCrewBtn\">Подставить прораба и бригаду</button>
             <button type=\"button\" class=\"btn-inline\" id=\"permitApplyCrewBtn\">Перенести в таблицу</button>
         </aside>
         <section class=\"permit-sheet\" id=\"permitPrintSheet\">
@@ -5601,7 +5747,7 @@ def arm_height_permit_html() -> HTMLResponse:
             <div class=\"permit-line\">Рабочие места подготовлены. <input id=\"permitPreparedBy\" class=\"line-input\" type=\"text\" value=\"{escape(responsible_executor)}\" /></div>
 
             <div class=\"permit-number-title\">Место выполнения работ:</div>
-            <input id=\"permitWorkPlace\" class=\"line-input\" type=\"text\" value=\"{escape(metadata.get('object_name') or '')}\" />
+            <input id=\"permitWorkPlace\" class=\"line-input\" type=\"text\" value=\"Монтаж в осях 1-30, А-Ф\" />
 
             <div class=\"permit-number-title\">Содержание работ:</div>
             <textarea id=\"permitContent\" class=\"permit-area\">Монтажные и сопутствующие работы на высоте в соответствии с ППР и технологическими картами.</textarea>
@@ -5688,6 +5834,7 @@ def arm_height_permit_html() -> HTMLResponse:
     .permit-side {{ position: sticky; top: 62px; max-height: calc(100vh - 80px); overflow:auto; }}
     .permit-side h2, .permit-side h3 {{ margin: 0 0 10px; }}
     .permit-side h3 {{ margin-top: 16px; font-size: 14px; }}
+    .permit-side-select {{ width:100%; box-sizing:border-box; border:1px solid #ccd4d7; border-radius:10px; padding:8px 10px; margin-bottom:8px; background:#fff; }}
     .permit-side-text {{ width:100%; min-height:180px; box-sizing:border-box; border:1px solid #ccd4d7; border-radius:10px; padding:10px; resize:vertical; font:13px/1.45 Consolas, 'Courier New', monospace; }}
     .permit-employee-list {{ display:grid; gap:8px; margin:12px 0; }}
     .permit-employee-option {{ display:flex; gap:8px; align-items:flex-start; padding:8px; border:1px solid #d8e0e0; border-radius:10px; background:#fff; }}
@@ -5716,16 +5863,111 @@ def arm_height_permit_html() -> HTMLResponse:
     const permitStatus = document.getElementById('permitStatus');
     const permitOutputPath = document.getElementById('permitOutputPath');
     const permitCrewTable = document.getElementById('permitCrewTable').querySelector('tbody');
+    const permitForemanSelect = document.getElementById('permitForemanSelect');
+    const permitTeamSelect = document.getElementById('permitTeamSelect');
+
+    function permitIsForeman(employee) {{
+        const position = String((employee && employee.position) || '').toLowerCase();
+        return position.includes('прораб') || position.includes('руковод') || position.includes('мастер');
+    }}
+
+    function permitUniqueTeams() {{
+        const values = new Set();
+        for (const employee of permitEmployees) {{
+            const team = String((employee && employee.team) || '').trim();
+            if (team) {{
+                values.add(team);
+            }}
+        }}
+        return Array.from(values).sort((a, b) => a.localeCompare(b, 'ru'));
+    }}
+
+    function permitCheckedByTeam(teamName) {{
+        const normalized = String(teamName || '').trim();
+        const checked = [];
+        const boxes = Array.from(document.querySelectorAll('.permit-employee-checkbox'));
+        for (const box of boxes) {{
+            const boxTeam = String(box.dataset.team || '').trim();
+            const isMatch = normalized && boxTeam === normalized;
+            box.checked = isMatch;
+            if (isMatch) {{
+                checked.push({{
+                    name: box.dataset.name || '',
+                    position: box.dataset.position || '',
+                    team: boxTeam,
+                }});
+            }}
+        }}
+        return checked;
+    }}
+
+    function permitApplyForemanData() {{
+        if (!permitForemanSelect) {{
+            return;
+        }}
+        const foremanName = permitForemanSelect.value || '';
+        if (!foremanName) {{
+            return;
+        }}
+        const manager = document.getElementById('permitManager');
+        const executor = document.getElementById('permitExecutor');
+        const preparedBy = document.getElementById('permitPreparedBy');
+        const instructionManager = document.getElementById('permitInstructionManager');
+        const instructionExecutor = document.getElementById('permitInstructionExecutor');
+        if (manager) {{ manager.value = foremanName; }}
+        if (executor) {{ executor.value = foremanName; }}
+        if (preparedBy) {{ preparedBy.value = foremanName; }}
+        if (instructionManager) {{ instructionManager.value = foremanName; }}
+        if (instructionExecutor) {{ instructionExecutor.value = foremanName; }}
+    }}
+
+    function permitInitSelectors() {{
+        if (permitForemanSelect) {{
+            permitForemanSelect.innerHTML = '';
+            const foremen = permitEmployees.filter((item) => permitIsForeman(item));
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Выберите прораба';
+            permitForemanSelect.appendChild(placeholder);
+            for (const foreman of foremen) {{
+                const option = document.createElement('option');
+                option.value = foreman.name || '';
+                option.textContent = (foreman.name || '') + (foreman.team ? (' | ' + foreman.team) : '');
+                permitForemanSelect.appendChild(option);
+            }}
+            if (foremen.length) {{
+                permitForemanSelect.value = foremen[0].name || '';
+            }}
+        }}
+
+        if (permitTeamSelect) {{
+            permitTeamSelect.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Выберите бригаду';
+            permitTeamSelect.appendChild(placeholder);
+            for (const team of permitUniqueTeams()) {{
+                const option = document.createElement('option');
+                option.value = team;
+                option.textContent = team;
+                permitTeamSelect.appendChild(option);
+            }}
+            if (permitTeamSelect.options.length > 1) {{
+                permitTeamSelect.selectedIndex = 1;
+            }}
+        }}
+    }}
 
     function permitSelectedEmployees() {{
         return Array.from(document.querySelectorAll('.permit-employee-checkbox:checked')).map((node) => ({{
             name: node.dataset.name || '',
-            position: node.dataset.position || ''
+            position: node.dataset.position || '',
+            team: node.dataset.team || ''
         }}));
     }}
 
-    function permitApplyCrew() {{
-        const selected = permitSelectedEmployees();
+    function permitApplyCrew(selectedCrew) {{
+        const selected = Array.isArray(selectedCrew) && selectedCrew.length ? selectedCrew : permitSelectedEmployees();
         const rows = Array.from(permitCrewTable.querySelectorAll('tr'));
         rows.forEach((row, index) => {{
             const inputs = row.querySelectorAll('input');
@@ -5863,6 +6105,29 @@ def arm_height_permit_html() -> HTMLResponse:
     }}
 
     document.getElementById('permitApplyCrewBtn').addEventListener('click', () => permitApplyCrew());
+    document.getElementById('permitApplyForemanCrewBtn').addEventListener('click', () => {{
+        const selectedTeam = permitTeamSelect ? permitTeamSelect.value : '';
+        if (selectedTeam) {{
+            const crew = permitCheckedByTeam(selectedTeam);
+            permitApplyCrew(crew);
+        }} else {{
+            permitApplyCrew();
+        }}
+        permitApplyForemanData();
+    }});
+    if (permitForemanSelect) {{
+        permitForemanSelect.addEventListener('change', permitApplyForemanData);
+    }}
+    if (permitTeamSelect) {{
+        permitTeamSelect.addEventListener('change', () => {{
+            const selectedTeam = permitTeamSelect.value || '';
+            if (!selectedTeam) {{
+                return;
+            }}
+            const crew = permitCheckedByTeam(selectedTeam);
+            permitApplyCrew(crew);
+        }});
+    }}
     document.getElementById('permitSaveBtn').addEventListener('click', () => {{
         permitStatus.textContent = 'Сохранение...';
         permitSave().catch((err) => {{
@@ -5878,7 +6143,13 @@ def arm_height_permit_html() -> HTMLResponse:
         window.location.href = '/arm/editor?rel_path=' + encodeURIComponent(relPath) + '&back=' + encodeURIComponent('/arm/permit/height');
     }});
     document.getElementById('permitPrintBtn').addEventListener('click', () => window.print());
-    permitApplyCrew();
+    permitInitSelectors();
+    permitApplyForemanData();
+    if (permitTeamSelect && permitTeamSelect.value) {{
+        permitApplyCrew(permitCheckedByTeam(permitTeamSelect.value));
+    }} else {{
+        permitApplyCrew();
+    }}
     </script>
     """
     return _arm_simple_page(title="АРМ: наряд на высоте", active_nav="permit-height", body_html=body_html)
@@ -6117,6 +6388,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
 
     const scannerDevices = document.getElementById('scannerDevices');
     const scannerDocType = document.getElementById('scannerDocType');
+    const scannerSortMode = document.getElementById('scannerSortMode');
     const scannerSubject = document.getElementById('scannerSubject');
     const scannerEmployee = document.getElementById('scannerEmployee');
     const scannerEmployeeSelect = document.getElementById('scannerEmployeeSelect');
@@ -6133,6 +6405,9 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     const manualReview = document.getElementById('manualReview');
     const manualReviewList = document.getElementById('manualReviewList');
     const manualReviewSelection = document.getElementById('manualReviewSelection');
+    const manualReviewTargetType = document.getElementById('manualReviewTargetType');
+    const manualReviewSuggestBtn = document.getElementById('manualReviewSuggestBtn');
+    const manualReviewMkDirBtn = document.getElementById('manualReviewMkDirBtn');
     const manualReviewMovePath = document.getElementById('manualReviewMovePath');
     const manualReviewOpenBtn = document.getElementById('manualReviewOpenBtn');
     const manualReviewDownloadBtn = document.getElementById('manualReviewDownloadBtn');
@@ -6251,6 +6526,18 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     let voiceFallbackChunks = [];
     let voiceFallbackSampleRate = 16000;
     let voiceLastTranscript = '';
+
+    const SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE = new Set(['PASSPORT']);
+    const MANUAL_REVIEW_TARGET_BY_SCAN_TYPE = {
+        ORDER: '01_orders_and_appointments',
+        AWR: '05_execution_docs/work_reports',
+        PASSPORT: '02_personnel/employees',
+        INVOICE: '08_outgoing_submissions/бухгалтерия/счета',
+        UPD: '08_outgoing_submissions/бухгалтерия/упд',
+        TTN: '08_outgoing_submissions/логистика/ттн',
+        ACT: '05_execution_docs/admission_acts',
+        OTHER: '10_scan_inbox/manual_review',
+    };
 
     const canGoogleSpeechFallback = Boolean(
         navigator.mediaDevices
@@ -6772,6 +7059,31 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         return match ? String(match[1]).toLowerCase() : '';
     }
 
+    function parseOrderLabelFromPath(relPath, fallbackName) {
+        const safeRel = String(relPath || '').trim();
+        const safeName = String(fallbackName || '').trim();
+        const sourceName = safeName || safeRel.split('/').pop() || '';
+        if (!sourceName) {
+            return '';
+        }
+        const stem = sourceName.replace(/\.[^.]+$/u, '');
+        const match = /ORDER[_-]?([0-9]{1,3})(?:[_-](.*))?/iu.exec(stem);
+        if (!match) {
+            return '';
+        }
+        let orderNo = String(match[1] || '').trim();
+        if (/^\d+$/u.test(orderNo)) {
+            orderNo = orderNo.padStart(2, '0');
+        }
+        let title = String(match[2] || '').replace(/[_-]?v\d+$/iu, '').trim();
+        title = title.replace(/[_-]+/gu, ' ').replace(/\s+/gu, ' ').trim();
+        if (title) {
+            title = localizeLatinTokens(title);
+            title = capitalizeCyrillic(title);
+        }
+        return title ? ('Приказ №' + orderNo + ' - ' + title) : ('Приказ №' + orderNo);
+    }
+
     function renderEmployeeChecklistEmployeeOptions() {
         if (!employeeChecklistEmployeeSelect) {
             return;
@@ -7204,7 +7516,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         const employeeId = isFileName ? '' : parseEmployeeIdFromName(rawName);
         if (employeeId && /^\d{2,5}[_-]/u.test(rawName)) {
             const personName = prettifyUnknownName(rawName.replace(/^\d{2,10}[_-]?/u, ''));
-            return personName ? ('Сотрудник ' + employeeId + ' - ' + personName) : ('Сотрудник ' + employeeId);
+            return personName ? ('[' + employeeId + '] ' + personName) : ('[' + employeeId + ']');
         }
 
         return '';
@@ -7348,11 +7660,12 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     }
 
     function syncScannerRequirements() {
-        const isPassport = scannerDocType && scannerDocType.value === 'PASSPORT';
+        const selectedDocType = scannerDocType ? scannerDocType.value : 'ORDER';
+        const requiresEmployee = SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE.has(selectedDocType);
         if (scannerEmployee) {
-            scannerEmployee.required = isPassport;
+            scannerEmployee.required = requiresEmployee;
         }
-        if (isPassport) {
+        if (requiresEmployee) {
             if (scannerEmployee) {
                 scannerEmployee.classList.add('required-input');
                 scannerEmployee.placeholder = 'Код сотрудника обязателен для удостоверения/протокола';
@@ -7371,10 +7684,14 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
 
         if (scannerEmployee) {
             scannerEmployee.classList.remove('required-input');
-            scannerEmployee.placeholder = 'Код сотрудника (для удостоверения/протокола)';
+            scannerEmployee.placeholder = 'Код сотрудника (нужен только для удостоверения/протокола)';
         }
         if (scannerHint) {
-            scannerHint.textContent = 'Режим приказа/акта: код сотрудника можно не заполнять.';
+            if (selectedDocType === 'INVOICE' || selectedDocType === 'UPD') {
+                scannerHint.textContent = 'Режим бухгалтерских сканов: код сотрудника не обязателен, проверьте тег в теме (например: счет, упд).';
+            } else {
+                scannerHint.textContent = 'Код сотрудника можно не заполнять для текущего типа скана.';
+            }
         }
         if (scannerEmployeeHint) {
             const sample = knownEmployeeIds.slice(0, 8).join(', ');
@@ -8275,7 +8592,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 const displayName = getEmployeeDisplayName(entry.rel_path);
                 if (displayName) {
                     const employeeId = parseEmployeeIdFromName(entry.name || '');
-                    prettyName = employeeId ? ('Сотрудник ' + employeeId + ' - ' + displayName) : displayName;
+                    prettyName = employeeId ? ('[' + employeeId + '] ' + displayName) : displayName;
                 }
             }
             if (entry.is_dir) {
@@ -8285,6 +8602,10 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 }
                 a.textContent = '[Папка] ' + prettyName;
             } else {
+                const orderFileLabel = parseOrderLabelFromPath(entry.rel_path, entry.name);
+                if (orderFileLabel) {
+                    prettyName = orderFileLabel;
+                }
                 const ext = fileExtensionFromName(entry.name);
                 const typeLabel = ext ? ext.toUpperCase() : 'FILE';
                 if (ext === 'md' || ext === 'txt' || ext === 'csv' || ext === 'json' || ext === 'yml' || ext === 'yaml' || ext === 'py' || ext === 'log' || ext === 'ini' || ext === 'docx') {
@@ -8472,7 +8793,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
 
         const selectedDocType = scannerDocType ? scannerDocType.value : 'ORDER';
         const employeeId = scannerEmployeeValue();
-        if (selectedDocType === 'PASSPORT' && !employeeId) {
+        if (SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE.has(selectedDocType) && !employeeId) {
             scannerMsg.textContent = 'Сканирование остановлено: для удостоверения/протокола требуется код сотрудника.';
             setInteractionHint('Перед сканированием удостоверения/протокола заполните поле кода сотрудника.', 'error');
             if (scannerEmployee) {
@@ -8565,6 +8886,41 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         }
     }
 
+    function isManualReviewUnresolved(row) {
+        const confidence = Number(row && row.confidence);
+        const predictedType = String((row && row.predicted_doc_type) || '').toLowerCase();
+        return !Number.isFinite(confidence) || confidence < 0.7 || predictedType === 'unknown';
+    }
+
+    function sortManualReviewRows(rows) {
+        const mode = scannerSortMode ? scannerSortMode.value : 'unresolved';
+        const next = Array.isArray(rows) ? rows.slice() : [];
+        if (mode === 'name') {
+            return next.sort((left, right) => String(left.rel_path || '').localeCompare(String(right.rel_path || ''), 'ru'));
+        }
+        return next.sort((left, right) => {
+            const unresolvedDelta = Number(isManualReviewUnresolved(right)) - Number(isManualReviewUnresolved(left));
+            if (unresolvedDelta !== 0) {
+                return unresolvedDelta;
+            }
+            const leftConfidence = Number(left.confidence);
+            const rightConfidence = Number(right.confidence);
+            if (Number.isFinite(leftConfidence) && Number.isFinite(rightConfidence)) {
+                if (leftConfidence !== rightConfidence) {
+                    return leftConfidence - rightConfidence;
+                }
+            }
+            return String(left.rel_path || '').localeCompare(String(right.rel_path || ''), 'ru');
+        });
+    }
+
+    function deriveManualReviewRoute(typeCode, row) {
+        const normalizedType = String(typeCode || '').toUpperCase();
+        const base = MANUAL_REVIEW_TARGET_BY_SCAN_TYPE[normalizedType] || MANUAL_REVIEW_TARGET_BY_SCAN_TYPE.OTHER;
+        const fileName = String(((row && row.rel_path) || '').split('/').pop() || '').trim();
+        return base ? (base + (fileName ? ('/' + fileName) : '')) : fileName;
+    }
+
     function renderManualReviewRows(rows) {
         if (!manualReviewList) {
             return;
@@ -8614,8 +8970,12 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
 
             const meta = document.createElement('div');
             meta.className = 'meta';
+            const unresolvedLabel = isManualReviewUnresolved(row) ? 'да' : 'нет';
             meta.textContent = 'Тип: ' + (row.predicted_doc_type || '-')
+                + '; тип скана: ' + (row.scan_doc_type || '-')
+                + '; тег: ' + (row.scan_subject_tag || '-')
                 + '; источник: ' + (row.source || '-')
+                + '; неразобран: ' + unresolvedLabel
                 + '; OCR: ' + (row.ocr_text_rel_path ? 'есть' : 'нет');
             item.appendChild(meta);
 
@@ -8642,7 +9002,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
 
     async function refreshManualReviewRows() {
         const rows = await api('/arm/scan/manual-review');
-        manualReviewRows = Array.isArray(rows) ? rows : [];
+        manualReviewRows = sortManualReviewRows(Array.isArray(rows) ? rows : []);
         if (manualReview) {
             manualReview.textContent = manualReviewRows.length
                 ? ('Ручной разбор: найдено файлов ' + manualReviewRows.length + '. Выберите файл в списке ниже.')
@@ -8733,6 +9093,34 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         setInteractionHint('Открыт OCR-файл с текстом для редактирования.', 'ok');
     }
 
+    function suggestPathForSelectedManualReview() {
+        const selectedRow = requireSelectedManualReviewRow();
+        if (!selectedRow) {
+            return '';
+        }
+        const selectedType = manualReviewTargetType && manualReviewTargetType.value
+            ? manualReviewTargetType.value
+            : (selectedRow.scan_doc_type || 'OTHER');
+        const nextPath = deriveManualReviewRoute(selectedType, selectedRow);
+        if (manualReviewMovePath) {
+            manualReviewMovePath.value = nextPath;
+        }
+        return nextPath;
+    }
+
+    async function ensureManualReviewMoveFolder() {
+        const targetPath = (manualReviewMovePath && manualReviewMovePath.value || '').trim();
+        const folderPath = targetPath.split('/').slice(0, -1).join('/');
+        if (!folderPath) {
+            throw new Error('Сначала укажите путь файла, чтобы создать целевую папку.');
+        }
+        const data = await api('/arm/fs/mkdir?rel_path=' + encodeURIComponent(folderPath), { method: 'POST' });
+        if (scannerMsg) {
+            scannerMsg.textContent = data.message || ('Папка готова: ' + folderPath);
+        }
+        return folderPath;
+    }
+
     async function moveSelectedManualReview() {
         const selectedRow = requireSelectedManualReviewRow();
         if (!selectedRow) {
@@ -8744,6 +9132,11 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             return;
         }
 
+        const targetFolder = targetPath.split('/').slice(0, -1).join('/');
+        if (targetFolder) {
+            await api('/arm/fs/mkdir?rel_path=' + encodeURIComponent(targetFolder), { method: 'POST' });
+        }
+
         const data = await api(
             '/arm/fs/move?source_rel_path=' + encodeURIComponent(selectedRow.rel_path) + '&target_rel_path=' + encodeURIComponent(targetPath),
             { method: 'POST' }
@@ -8752,7 +9145,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             scannerMsg.textContent = data.message || 'Файл перемещен.';
         }
         await refreshManualReviewRows();
-        const targetFolder = targetPath.split('/').slice(0, -1).join('/');
         if (targetFolder) {
             await loadTree(targetFolder).catch(() => {});
             updateTaskActionContext(targetFolder, 'ручной разбор: перенос');
@@ -8958,6 +9350,12 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     if (scannerDocType) {
         scannerDocType.addEventListener('change', syncScannerRequirements);
     }
+    if (scannerSortMode) {
+        scannerSortMode.addEventListener('change', () => {
+            manualReviewRows = sortManualReviewRows(manualReviewRows);
+            renderManualReviewRows(manualReviewRows);
+        });
+    }
     if (scannerEmployee) {
         scannerEmployee.addEventListener('input', syncScannerRequirements);
     }
@@ -9094,6 +9492,27 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         manualReviewEditOcrBtn.addEventListener('click', () => withBusy(manualReviewEditOcrBtn, openSelectedManualReviewOcr).catch((err) => {
             setInteractionHint('Не удалось открыть OCR-текст: ' + err, 'error');
         }));
+    }
+    if (manualReviewSuggestBtn) {
+        manualReviewSuggestBtn.addEventListener('click', () => {
+            const path = suggestPathForSelectedManualReview();
+            if (!path) {
+                return;
+            }
+            setInteractionHint('Подставлен маршрут переноса: ' + describePath(path), 'ok');
+        });
+    }
+    if (manualReviewMkDirBtn) {
+        manualReviewMkDirBtn.addEventListener('click', () => withBusy(manualReviewMkDirBtn, ensureManualReviewMoveFolder).then((folderPath) => {
+            setInteractionHint('Папка маршрута подготовлена: ' + describePath(folderPath), 'ok');
+        }).catch((err) => {
+            setInteractionHint('Не удалось создать папку маршрута: ' + err, 'error');
+        }));
+    }
+    if (manualReviewTargetType) {
+        manualReviewTargetType.addEventListener('change', () => {
+            suggestPathForSelectedManualReview();
+        });
     }
     if (manualReviewMoveBtn) {
         manualReviewMoveBtn.addEventListener('click', () => withBusy(manualReviewMoveBtn, moveSelectedManualReview).catch((err) => {
@@ -9519,6 +9938,9 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     .manual-review-title {{ font-weight: 600; color: #0f172a; }}
     .manual-review-score {{ font-size: 12px; color: #0f766e; font-weight: 700; }}
     .employee-checklist-head {{ display: flex; justify-content: space-between; align-items: center; gap: 8px; }}
+    #todoMainCard {{ grid-column: 1 / -1; }}
+    #structureCard {{ grid-column: 1; }}
+    #previewCard {{ grid-column: 2; }}
     #employeeChecklistCard {{ grid-column: 1 / -1; }}
     .employee-checklist-head h2 {{ margin: 0; }}
     .batch-panel {{ margin-top: 10px; border: 1px solid #d7e1e8; border-radius: 10px; padding: 10px; background: #f8fbff; }}
@@ -9584,7 +10006,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             <div class=\"system-hint\">Системная подсказка: клик по позиции откроет нужную папку; под каждой позицией указано действие по устранению.</div>
             <ul>{gaps_html}</ul>
         </article>
-        <article class=\"card\"> 
+        <article class=\"card\" id=\"todoMainCard\"> 
             <h2>Задачи на сегодня</h2>
             <div class=\"system-hint\">Системная подсказка: начните с пунктов приоритета high.</div>
             <ul>{todo_html}</ul>
@@ -9706,6 +10128,15 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                     <option value=\"ORDER\">Приказ</option>
                     <option value=\"AWR\">Акт выполненных работ</option>
                     <option value=\"PASSPORT\">Удостоверение/протокол</option>
+                    <option value=\"INVOICE\">Счет</option>
+                    <option value=\"UPD\">УПД</option>
+                    <option value=\"TTN\">ТТН</option>
+                    <option value=\"ACT\">Акт</option>
+                    <option value=\"OTHER\">Другое</option>
+                </select>
+                <select id=\"scannerSortMode\">
+                    <option value=\"unresolved\">Сортировка: сначала неразобранные</option>
+                    <option value=\"name\">Сортировка: по имени файла</option>
                 </select>
                 <input id=\"scannerSubject\" placeholder=\"Тема: например приказ_допуск_20260311\" />
                 <select id=\"scannerEmployeeSelect\">
@@ -9728,6 +10159,21 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             <pre id=\"manualReview\">Ручной разбор: ожидание</pre>
             <div id=\"manualReviewList\" class=\"manual-review-list\">Список ручного разбора появится после классификации.</div>
             <div class=\"meta\" id=\"manualReviewSelection\">Файл из ручного разбора не выбран.</div>
+            <div class=\"inline-grid\">
+                <select id=\"manualReviewTargetType\">
+                    <option value=\"\">Маршрут вручную (как в поле пути ниже)</option>
+                    <option value=\"ORDER\">Маршрут: Приказ</option>
+                    <option value=\"AWR\">Маршрут: АВР</option>
+                    <option value=\"PASSPORT\">Маршрут: Удостоверение/протокол сотрудника</option>
+                    <option value=\"INVOICE\">Маршрут: Счет</option>
+                    <option value=\"UPD\">Маршрут: УПД</option>
+                    <option value=\"TTN\">Маршрут: ТТН</option>
+                    <option value=\"ACT\">Маршрут: Акт</option>
+                    <option value=\"OTHER\">Маршрут: Прочее/ручной разбор</option>
+                </select>
+                <button class=\"btn secondary\" id=\"manualReviewSuggestBtn\" type=\"button\">Подставить маршрут</button>
+                <button class=\"btn secondary\" id=\"manualReviewMkDirBtn\" type=\"button\">Создать папку маршрута</button>
+            </div>
             <input id=\"manualReviewMovePath\" placeholder=\"Целевой путь для переноса, например 02_personnel/employees/001_ivanov/06_permits_and_work_admission/file.jpg\" />
             <div class=\"actions\">
                 <button class=\"btn secondary\" id=\"manualReviewOpenBtn\" type=\"button\">Открыть</button>
@@ -9780,7 +10226,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             <div class=\"system-hint\">Загрузите DOCX/PDF или скан в любую папку объекта. Загруженные DOCX-шаблоны сразу доступны в файловом дереве.</div>
             <div class=\"actions\" style=\"margin-top:8px; flex-wrap:wrap;\">
                 <input id=\"uploadDir\" placeholder=\"Папка назначения, напр. 06_normative_base\" style=\"flex:2; min-width:200px;\" />
-                <input type=\"file\" id=\"uploadFile\" accept=\".docx,.pdf,.png,.jpg,.jpeg,.tiff,.tif\" style=\"flex:2; min-width:180px;\" />
+                <input type=\"file\" id=\"uploadFile\" accept=\".docx,.pdf,.png,.jpg,.jpeg,.tiff,.tif,.xlsx\" style=\"flex:2; min-width:180px;\" />
                 <button class=\"btn\" id=\"uploadBtn\" type=\"button\">Загрузить</button>
             </div>
             <div class=\"actions\" style=\"margin-top:8px;\">

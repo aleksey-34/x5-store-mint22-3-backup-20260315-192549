@@ -12,7 +12,7 @@ FORMAT_GUIDS = {
     "tif": "{B96B3CB1-0728-11D3-9D7B-0000F81EF32E}",
 }
 
-DOC_TYPES = {"AWR", "PASSPORT", "ORDER"}
+DOC_TYPES = {"AWR", "PASSPORT", "ORDER", "INVOICE", "UPD", "TTN", "ACT", "OTHER"}
 
 
 def _slug(value: str) -> str:

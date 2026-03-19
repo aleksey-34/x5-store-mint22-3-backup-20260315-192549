@@ -587,7 +587,9 @@ MANUAL_REVIEW_TARGET_BY_DOC_TYPE: dict[str, str] = {
 SCANNER_DOC_TYPES: dict[str, str] = {
     "ORDER": "Приказ",
     "AWR": "Акт выполненных работ",
-    "PASSPORT": "Удостоверение/протокол",
+    "AOSR": "АОСР (акт освид. скрытых работ)",
+    "MATPASSPORT": "Паспорт/сертификат материала",
+    "PASSPORT": "Удостоверение/протокол сотрудника",
     "INVOICE": "Счет",
     "UPD": "УПД",
     "TTN": "ТТН",
@@ -595,6 +597,7 @@ SCANNER_DOC_TYPES: dict[str, str] = {
     "OTHER": "Другое",
 }
 SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE: set[str] = {"PASSPORT"}
+SCANNER_MAX_FILE_SIZE_BYTES = 3 * 1024 * 1024
 SCANNER_PROFILE_SETTINGS: dict[int, dict[str, object]] = {
     1: {
         "label": "Профиль 1: документы + печати + OCR",
@@ -615,7 +618,9 @@ SCANNER_PROFILE_SETTINGS: dict[int, dict[str, object]] = {
 
 MANUAL_REVIEW_TARGET_BY_SCAN_TYPE: dict[str, str] = {
     "ORDER": "01_orders_and_appointments",
-    "AWR": "05_execution_docs/work_reports",
+    "AWR": "05_execution_docs/hidden_work_acts",
+    "AOSR": "05_execution_docs/hidden_work_acts",
+    "MATPASSPORT": "05_execution_docs/material_passports",
     "PASSPORT": "02_personnel/employees",
     "INVOICE": "08_outgoing_submissions/бухгалтерия/счета",
     "UPD": "08_outgoing_submissions/бухгалтерия/упд",
@@ -642,6 +647,7 @@ MAINTENANCE_STATIC_FOLDERS: tuple[str, ...] = (
     "05_execution_docs/pprv_work_at_height",
     "05_execution_docs/admission_acts",
     "05_execution_docs/hidden_work_acts",
+    "05_execution_docs/material_passports",
     "05_execution_docs/work_reports",
     "06_normative_base",
     "07_monthly_control",
@@ -828,7 +834,7 @@ def _detect_recompress_profile_for_file(path: Path) -> int:
     return 2
 
 
-def _recompress_image_file(path: Path, profile_id: int) -> tuple[bool, int, int, int]:
+def _recompress_image_file(path: Path, profile_id: int, max_size_bytes: int = SCANNER_MAX_FILE_SIZE_BYTES) -> tuple[bool, int, int, int, bool]:
     try:
         from PIL import Image
     except Exception as exc:  # noqa: BLE001
@@ -846,30 +852,66 @@ def _recompress_image_file(path: Path, profile_id: int) -> tuple[bool, int, int,
 
     try:
         with Image.open(path) as image:
-            src = image
             if grayscale:
                 src = image.convert("L")
             elif image.mode not in {"RGB", "RGBA"}:
                 src = image.convert("RGB")
-
-            save_kwargs: dict[str, object] = {}
-            if suffix in {".jpg", ".jpeg"}:
-                save_kwargs.update({"quality": 80, "optimize": True, "progressive": True, "dpi": (dpi, dpi)})
-            elif suffix in {".tif", ".tiff"}:
-                save_kwargs.update({"compression": "tiff_lzw", "dpi": (dpi, dpi)})
-            elif suffix == ".png":
-                save_kwargs.update({"optimize": True, "compress_level": 9})
             else:
-                save_kwargs.update({"dpi": (dpi, dpi)})
+                src = image
 
-            src.save(path, **save_kwargs)
+            if suffix in {".jpg", ".jpeg"}:
+                best_bytes: bytes | None = None
+                quality_steps = [82, 76, 70, 64, 58, 52, 46, 40]
+                resize_steps = [1.0, 0.93, 0.86, 0.79, 0.72, 0.66]
+                base_width, base_height = src.size
+
+                for scale in resize_steps:
+                    if scale < 1.0:
+                        resized = src.resize(
+                            (max(1, int(base_width * scale)), max(1, int(base_height * scale))),
+                            Image.LANCZOS,
+                        )
+                    else:
+                        resized = src
+
+                    for quality in quality_steps:
+                        temp = io.BytesIO()
+                        resized.save(
+                            temp,
+                            format="JPEG",
+                            quality=quality,
+                            optimize=True,
+                            progressive=True,
+                            dpi=(dpi, dpi),
+                        )
+                        payload = temp.getvalue()
+                        if best_bytes is None or len(payload) < len(best_bytes):
+                            best_bytes = payload
+                        if len(payload) <= max_size_bytes:
+                            best_bytes = payload
+                            break
+                    if best_bytes is not None and len(best_bytes) <= max_size_bytes:
+                        break
+
+                if best_bytes is None:
+                    return False, before_size, before_size, profile_id, before_size <= max_size_bytes
+                path.write_bytes(best_bytes)
+            else:
+                save_kwargs: dict[str, object] = {}
+                if suffix in {".tif", ".tiff"}:
+                    save_kwargs.update({"compression": "tiff_lzw", "dpi": (dpi, dpi)})
+                elif suffix == ".png":
+                    save_kwargs.update({"optimize": True, "compress_level": 9})
+                else:
+                    save_kwargs.update({"dpi": (dpi, dpi)})
+                src.save(path, **save_kwargs)
     except HTTPException:
         raise
     except Exception:
-        return False, before_size, before_size, profile_id
+        return False, before_size, before_size, profile_id, before_size <= max_size_bytes
 
     after_size = path.stat().st_size
-    return True, before_size, after_size, profile_id
+    return True, before_size, after_size, profile_id, after_size <= max_size_bytes
 
 
 def _read_text_preview_content(path: Path) -> tuple[str, str]:
@@ -2659,15 +2701,6 @@ def _build_todos(
             )
         )
 
-    if not local_llm_reachable:
-        todos.append(
-            ArmTodoItem(
-                priority="medium",
-                title="Проверить доступность локальной LLM",
-                details="Проверить Ollama: /local-llm/status",
-            )
-        )
-
     for status_row in _collect_periodic_doc_statuses(root=root):
         if status_row.is_due:
             details = status_row.rule.details
@@ -2895,7 +2928,7 @@ def _build_dashboard_payload(db: Session) -> ArmDashboardResponse:
     root = resolve_object_root()
     checklist = _build_checklist(root=root)
     metrics = _collect_metrics(db=db, root=root)
-    local_llm_reachable, local_llm_version = check_local_llm_available()
+    local_llm_reachable, local_llm_version = False, None
 
     checklist_total = len(checklist)
     checklist_ready = sum(1 for item in checklist if item.ready)
@@ -3082,7 +3115,17 @@ def _infer_equipment_name(model_text: str) -> str:
         return "Строительная техника"
     if any(token in lowered for token in ("kia", "skoda", "toyota", "hyundai", "renault", "nissan", "ford", "авто", "автомоб")):
         return "Легковой автомобиль"
+    if any(token in lowered for token in ("chevrolet", "шевроле", "niva", "нива")):
+        return "Легковой автомобиль"
     return "Техника"
+
+
+def _normalize_vehicle_model_name(model_text: str) -> str:
+    normalized = " ".join((model_text or "").split()).strip()
+    lowered = normalized.lower()
+    if lowered in {"шевроле нива", "нива шевроле", "chevy niva"}:
+        return "Chevrolet Niva"
+    return normalized
 
 
 def _extract_employee_transport_entries(raw_text: str) -> list[dict[str, str]]:
@@ -3113,6 +3156,7 @@ def _extract_employee_transport_entries(raw_text: str) -> list[dict[str, str]]:
         model_text = details
         if plate_match:
             model_text = (details[: plate_match.start()] + details[plate_match.end() :]).strip(" ,.;:")
+        model_text = _normalize_vehicle_model_name(model_text)
         model_text = re.sub(r"\s+", " ", model_text).strip(" ,.;:")
 
         if not plate and not any(
@@ -3680,7 +3724,7 @@ def _execute_employee_documents_command(raw_text: str, root: Path) -> str | None
         requested_position = (request.get("position") or position or "Сотрудник").strip()
         position_explicit = (request.get("position_explicit") or "") == "1"
         requested_birth_date = (request.get("birth_date") or "").strip()
-        requested_vehicle_model = (request.get("vehicle_model") or "").strip()
+        requested_vehicle_model = _normalize_vehicle_model_name((request.get("vehicle_model") or "").strip())
         requested_vehicle_plate = (request.get("vehicle_plate") or "").strip()
         requested_equipment_name = (request.get("equipment_name") or "").strip()
 
@@ -4051,56 +4095,9 @@ def arm_assist(payload: ArmAssistRequest, db: Session = Depends(get_db)) -> ArmA
     scenario_result = _try_execute_assistant_scenario(payload=payload, db=db)
     if scenario_result is not None:
         return scenario_result
-
-    if not settings.local_llm_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Интеграция с локальной LLM отключена",
-        )
-
-    dashboard = _build_dashboard_payload(db=db)
-    todos = ArmTodoResponse(
-        generated_at=dashboard.generated_at,
-        object_root=dashboard.object_root,
-        items=_build_todos(
-            checklist=dashboard.checklist,
-            metrics=dashboard.metrics,
-            local_llm_reachable=dashboard.local_llm_reachable,
-        ),
-    )
-    context = _build_arm_context(payload=dashboard, todos=todos)
-
-    try:
-        result, used_profile, fallback_used = generate_with_local_llm_profile(
-            prompt=payload.question,
-            context=context,
-            profile=payload.profile,
-            model=payload.model,
-            system_prompt=None,
-            temperature=payload.temperature,
-            num_predict=payload.num_predict,
-            allow_fallback=payload.allow_fallback,
-        )
-    except LocalLLMConnectionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
-    except LocalLLMRequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
-    return ArmAssistResponse(
-        model=result.model,
-        response=result.response,
-        done=result.done,
-        used_profile=used_profile,
-        fallback_used=fallback_used,
-        total_duration_sec=result.total_duration_sec,
-        eval_tokens=result.eval_tokens,
-        eval_tokens_per_sec=result.eval_tokens_per_sec,
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Ассистент отключён",
     )
 
 
@@ -4237,7 +4234,24 @@ def arm_fs_file_read(rel_path: str) -> ArmFileReadResponse:
         rel_path=_to_rel_path(root, target),
         content=content,
         encoding=encoding,
+        size_bytes=size_bytes,
     )
+
+
+@router.get("/fs/stat")
+def arm_fs_stat(rel_path: str) -> dict[str, object]:
+    root = resolve_object_root()
+    target = _resolve_safe_path(root=root, rel_path=rel_path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+
+    stat = target.stat()
+    return {
+        "rel_path": _to_rel_path(root, target),
+        "size_bytes": int(stat.st_size),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        "text_preview_supported": target.suffix.lower() in TEXT_PREVIEW_EXTENSIONS,
+    }
 
 
 @router.post("/fs/file", response_model=ArmActionResponse)
@@ -4419,7 +4433,6 @@ def arm_fs_print_preview(rel_path: str, auto_print: bool = True) -> HTMLResponse
             "Используйте скачивание оригинала и печать через локальное приложение."
             "</div>"
         )
-
     html = _build_print_preview_html(
         file_rel_path=rel,
         file_name=target.name,
@@ -4559,10 +4572,7 @@ def arm_fs_delete(rel_path: str, with_sidecar: bool = True) -> ArmActionResponse
 def arm_scanner_devices() -> ArmScannerDevicesResponse:
     completed = _run_scanner_command(["list"])
     if completed.returncode != 0:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(completed.stderr.strip() or completed.stdout.strip() or "Не удалось получить список сканеров"),
-        )
+        return ArmScannerDevicesResponse(devices=[])
 
     devices = _parse_scanner_list_stdout(completed.stdout)
     return ArmScannerDevicesResponse(devices=devices)
@@ -4586,9 +4596,8 @@ def arm_scanner_scan_to_inbox(payload: ArmScanCaptureRequest) -> ArmActionRespon
             detail="Для типа «Удостоверение/протокол» заполните код сотрудника.",
         )
 
-    profile_settings = _scan_profile_settings(payload.scan_profile)
-    effective_dpi = int(profile_settings.get("dpi", payload.dpi))
-    effective_grayscale = bool(profile_settings.get("grayscale", payload.grayscale))
+    effective_dpi = int(payload.dpi)
+    effective_grayscale = bool(payload.grayscale)
 
     args = [
         "scan-to-inbox",
@@ -4617,8 +4626,8 @@ def arm_scanner_scan_to_inbox(payload: ArmScanCaptureRequest) -> ArmActionRespon
             detail=_humanize_scanner_error(completed.stderr, completed.stdout),
         )
 
-    profile_label = str(profile_settings.get("label") or f"Профиль {int(payload.scan_profile or 1)}")
-    message = completed.stdout.strip() or f"Скан добавлен во входящую папку ({profile_label})"
+    color_label = "grayscale" if effective_grayscale else "color"
+    message = completed.stdout.strip() or f"Скан добавлен во входящую папку ({effective_dpi} dpi, {color_label})"
     return ArmActionResponse(ok=True, message=message)
 
 
@@ -4635,6 +4644,7 @@ def arm_scanner_recompress_history() -> ArmActionResponse:
 
     scanned = 0
     changed = 0
+    within_limit = 0
     before_total = 0
     after_total = 0
 
@@ -4646,11 +4656,17 @@ def arm_scanner_recompress_history() -> ArmActionResponse:
                 continue
             scanned += 1
             profile_id = _detect_recompress_profile_for_file(file)
-            ok, before_size, after_size, _ = _recompress_image_file(file, profile_id)
+            ok, before_size, after_size, _, is_within_limit = _recompress_image_file(
+                file,
+                profile_id,
+                max_size_bytes=SCANNER_MAX_FILE_SIZE_BYTES,
+            )
             before_total += before_size
             after_total += after_size
             if ok and after_size < before_size:
                 changed += 1
+            if is_within_limit:
+                within_limit += 1
 
     if scanned == 0:
         return ArmActionResponse(ok=True, message="Сканы для оптимизации не найдены.")
@@ -4659,10 +4675,14 @@ def arm_scanner_recompress_history() -> ArmActionResponse:
     saved_mb = round(saved_bytes / (1024 * 1024), 2)
     before_mb = round(before_total / (1024 * 1024), 2)
     after_mb = round(after_total / (1024 * 1024), 2)
+    over_limit = max(0, scanned - within_limit)
     message = (
         f"Оптимизация завершена: обработано {scanned} файлов, сжато {changed}. "
+        f"До 3 МБ вписались {within_limit}/{scanned}. "
         f"Было {before_mb} МБ, стало {after_mb} МБ, экономия {saved_mb} МБ."
     )
+    if over_limit > 0:
+        message += f" Выше 3 МБ осталось {over_limit} файлов (часть PNG/TIFF может не вписаться без смены формата)."
     return ArmActionResponse(ok=True, message=message)
 
 
@@ -5086,6 +5106,14 @@ def _arm_simple_nav_html(active: str) -> str:
 def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
     root = resolve_object_root()
     documents = db.execute(select(Document).order_by(Document.created_at.desc())).scalars().all()
+    doc_type_options = sorted(
+        {
+            (doc.doc_type or "").strip()
+            for doc in documents
+            if (doc.doc_type or "").strip()
+        },
+        key=lambda value: value.lower(),
+    )
     rows: list[str] = []
     for doc in documents:
         rel_path = (doc.file_path or "").strip()
@@ -5118,8 +5146,19 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
             else '<span class="status-badge status-keep">В работе</span>'
         )
 
+        search_text = " ".join(
+            [
+                str(doc.id),
+                display_title,
+                order_no or "",
+                order_title or "",
+                doc.doc_type or "",
+                rel_path,
+            ]
+        ).lower()
+
         rows.append(
-            "<tr>"
+            f"<tr data-status=\"{escape(status)}\" data-doc-type=\"{escape((doc.doc_type or '').strip().lower())}\" data-search=\"{escape(search_text)}\">"
             f"<td>{escape(str(doc.id))}</td>"
             f"<td>{escape(display_title)}</td>"
             f"<td>{escape(order_no or '—')}</td>"
@@ -5128,64 +5167,110 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
             f"<td>{status_badge}</td>"
             f"<td>{deletion_badge}</td>"
             f"<td><input class=\"fix-input\" type=\"text\" data-doc-id=\"{doc.id}\" value=\"{fix_value}\" placeholder=\"Что исправить\" /></td>"
-            f"<td><select class=\"status-select\" data-doc-id=\"{doc.id}\">"
-            f"<option value=\"approved\"{' selected' if status == 'approved' else ''}>Утверждено (зеленая галочка)</option>"
-            f"<option value=\"new\"{' selected' if status == 'new' else ''}>Вновь созданные (синяя галочка)</option>"
-            f"<option value=\"fix\"{' selected' if status == 'fix' else ''}>Исправить (желтая шестеренка)</option>"
-            "</select></td>"
-            f"<td><button type=\"button\" class=\"btn-inline\" data-save-id=\"{doc.id}\">Сохранить статус</button></td>"
+            f"<td>"
+            f"<select class=\"status-select\" data-doc-id=\"{doc.id}\">"
+            f"<option value=\"approved\"{' selected' if status == 'approved' else ''}>✔ Утверждено</option>"
+            f"<option value=\"new\"{' selected' if status == 'new' else ''}>◉ Вновь создано</option>"
+            f"<option value=\"fix\"{' selected' if status == 'fix' else ''}>⚙ Исправить</option>"
+            f"</select>"
+            f"<button type=\"button\" class=\"s-save-btn\" data-save-id=\"{doc.id}\">💾 Сохранить</button>"
+            f"</td>"
             f"<td><div class=\"action-links\">"
-            f"<button type=\"button\" class=\"btn-inline\" data-mark-delete-id=\"{doc.id}\">Пометить на удаление</button>"
-            f"<button type=\"button\" class=\"btn-inline\" data-unmark-delete-id=\"{doc.id}\">Снять пометку</button>"
+            f"<button type=\"button\" class=\"del-btn\" data-mark-delete-id=\"{doc.id}\">🗑 Удалить</button>"
+            f"<button type=\"button\" class=\"unmark-btn\" data-unmark-delete-id=\"{doc.id}\">↩ Снять</button>"
             f"</div></td>"
             f"<td>{actions}</td>"
             "</tr>"
         )
 
-    rows_html = "".join(rows) if rows else "<tr><td colspan=\"12\">Документы отсутствуют</td></tr>"
+    rows_html = "".join(rows) if rows else "<tr><td colspan=\"11\">Документы отсутствуют</td></tr>"
+    doc_type_filter_html = "".join(
+        f"<option value=\"{escape(item.lower())}\">{escape(item)}</option>"
+        for item in doc_type_options
+    )
 
     body_html = (
         "<section class=\"card\">"
         "<h1>Структура и действия</h1>"
         "<div class=\"meta\">Управление статусами документов в БД: зеленая галочка — утверждено, синяя — вновь создано, желтая шестеренка — требует исправления.</div>"
         '<div id="structureStatusMsg" class="meta" style="margin-top:8px;">Готово к изменениям.</div>'
+        "<div class=\"controls\" style=\"margin-top:10px;\">"
+        "<input id=\"structureFilterText\" type=\"text\" placeholder=\"Поиск: ID, документ, путь, номер приказа\" style=\"min-width:260px;\" />"
+        "<select id=\"structureFilterStatus\" style=\"max-width:260px;\">"
+        "<option value=\"\">Все статусы</option>"
+        "<option value=\"approved\">Утверждено</option>"
+        "<option value=\"new\">Вновь созданные</option>"
+        "<option value=\"fix\">Требует исправления</option>"
+        "</select>"
+        "<select id=\"structureFilterDocType\" style=\"max-width:260px;\">"
+        "<option value=\"\">Все типы</option>"
+        f"{doc_type_filter_html}"
+        "</select>"
+        "</div>"
         "<style>"
-        ".structure-wrap{overflow-x:auto;padding-bottom:8px}"
-        ".structure-table{width:100%;table-layout:fixed}"
-        ".structure-table th,.structure-table td{padding:6px 8px;font-size:12px;line-height:1.2;vertical-align:top}"
-        ".structure-table th{font-size:11px}"
-        ".structure-table td:nth-child(1){width:48px}"
-        ".structure-table td:nth-child(2){width:220px}"
-        ".structure-table td:nth-child(3){width:72px}"
-        ".structure-table td:nth-child(4){width:180px}"
-        ".structure-table td:nth-child(5){width:74px}"
-        ".structure-table td:nth-child(6){width:120px}"
-        ".structure-table td:nth-child(7){width:112px}"
-        ".structure-table td:nth-child(8){width:170px}"
-        ".structure-table td:nth-child(9){width:132px}"
-        ".structure-table td:nth-child(10){width:150px}"
-        ".structure-table td:nth-child(11){width:240px}"
-        ".structure-table td:nth-child(12){width:300px}"
-        ".status-badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;line-height:1.15}"
+        ".structure-wrap{overflow-x:auto;padding-bottom:4px}"
+        ".structure-table{width:100%;min-width:1080px;table-layout:fixed;border-collapse:collapse}"
+        ".structure-table th,.structure-table td{padding:3px 5px;font-size:11px;line-height:1.2;vertical-align:middle;word-break:break-word}"
+        ".structure-table th{font-size:10px;font-weight:700;position:sticky;top:0;z-index:1;background:#edf6f4;padding:5px 5px;border-bottom:2px solid #c5dad8}"
+        ".structure-table tr{border-bottom:1px solid #e8eeec}"
+        ".structure-table td:nth-child(1){width:32px;text-align:center;color:#5b6672}"
+        ".structure-table td:nth-child(2){width:150px;overflow:hidden;max-width:150px}"
+        ".structure-table td:nth-child(3){width:38px;text-align:center}"
+        ".structure-table td:nth-child(4){width:105px;overflow:hidden;max-width:105px}"
+        ".structure-table td:nth-child(5){width:44px}"
+        ".structure-table td:nth-child(6){width:82px}"
+        ".structure-table td:nth-child(7){width:72px}"
+        ".structure-table td:nth-child(8){width:110px}"
+        ".structure-table td:nth-child(9){width:158px}"
+        ".structure-table td:nth-child(10){width:120px}"
+        ".structure-table td:nth-child(11){width:175px}"
+        ".status-badge{display:inline-block;padding:2px 6px;border-radius:999px;font-size:10px;font-weight:700;line-height:1.2;white-space:nowrap}"
         ".status-approved{background:#dcfce7;color:#166534}"
         ".status-new{background:#dbeafe;color:#1d4ed8}"
         ".status-fix{background:#fef3c7;color:#b45309}"
         ".status-delete{background:#fee2e2;color:#991b1b}"
-        ".status-keep{background:#e2e8f0;color:#1e293b}"
-        ".status-select,.fix-input{width:100%;min-width:120px;box-sizing:border-box;padding:6px 8px;font-size:12px}"
-        ".fix-input{min-width:160px}"
-        ".action-links{display:flex;gap:6px;flex-wrap:wrap}"
-        ".action-links .btn-inline{min-width:150px;padding:6px 10px;font-size:12px;line-height:1.2}"
-        "td .btn-inline{padding:6px 10px;font-size:12px;line-height:1.2;min-width:110px}"
-        "@media (max-width: 1400px){.structure-table{table-layout:auto}}"
+        ".status-keep{background:#e2e8f0;color:#334155}"
+        ".status-select,.fix-input{width:100%;box-sizing:border-box;padding:2px 4px;font-size:11px;border-radius:6px;border:1px solid #c5cbc9;margin-bottom:2px}"
+        ".s-save-btn{width:100%;padding:2px 5px;font-size:10px;margin-top:2px;border-radius:6px;cursor:pointer;background:#0f766e;color:#fff;border:none;font-weight:600}"
+        ".s-save-btn:hover{background:#0c5e58}"
+        ".action-links{display:flex;gap:4px;flex-wrap:wrap;align-items:center}"
+        ".del-btn,.unmark-btn{padding:2px 6px;font-size:10px;border-radius:6px;border:1px solid;cursor:pointer;font-weight:600;white-space:nowrap}"
+        ".del-btn{background:#fee2e2;color:#991b1b;border-color:#fca5a5}"
+        ".del-btn:hover{background:#fca5a5}"
+        ".unmark-btn{background:#e2e8f0;color:#334155;border-color:#cbd5e1}"
+        ".unmark-btn:hover{background:#cbd5e1}"
+        "td .btn-inline{padding:2px 6px;font-size:10px;min-width:0;white-space:nowrap;border-radius:6px}"
+        "@media (max-width: 1300px){.structure-table{table-layout:auto;min-width:900px}}"
         "</style>"
         "<div class=\"structure-wrap\"><table class=\"structure-table\"><thead><tr>"
-        "<th>ID</th><th>Документ</th><th>№ приказа</th><th>Наименование из шапки</th><th>Тип</th><th>Статус</th><th>Удаление</th><th>Что исправить</th><th>Новый статус</th><th>Действие</th><th>Управление</th><th>Файл</th>"
+        "<th>ID</th><th>Документ</th><th>№</th><th>Наименование</th><th>Тип</th><th>Статус</th><th>Удал.</th><th>Что исправить</th><th>Статус / Сохранить</th><th>Управление</th><th>Файл</th>"
         "</tr></thead>"
         f"<tbody>{rows_html}</tbody></table></div>"
         "</section>"
         "<script>"
         "const structureStatusMsg = document.getElementById('structureStatusMsg');"
+        "const structureFilterText = document.getElementById('structureFilterText');"
+        "const structureFilterStatus = document.getElementById('structureFilterStatus');"
+        "const structureFilterDocType = document.getElementById('structureFilterDocType');"
+        "const structureRows = Array.from(document.querySelectorAll('.structure-table tbody tr'));"
+        "function applyStructureFilters(){"
+        "const text = (structureFilterText && structureFilterText.value || '').trim().toLowerCase();"
+        "const status = (structureFilterStatus && structureFilterStatus.value || '').trim().toLowerCase();"
+        "const docType = (structureFilterDocType && structureFilterDocType.value || '').trim().toLowerCase();"
+        "let visible = 0;"
+        "for (const row of structureRows){"
+        "const rowStatus = String(row.getAttribute('data-status') || '').toLowerCase();"
+        "const rowDocType = String(row.getAttribute('data-doc-type') || '').toLowerCase();"
+        "const rowSearch = String(row.getAttribute('data-search') || '').toLowerCase();"
+        "const byStatus = !status || rowStatus === status;"
+        "const byDocType = !docType || rowDocType === docType;"
+        "const byText = !text || rowSearch.includes(text);"
+        "const show = byStatus && byDocType && byText;"
+        "row.style.display = show ? '' : 'none';"
+        "if (show) { visible += 1; }"
+        "}"
+        "structureStatusMsg.textContent = 'Фильтр: показано ' + visible + ' из ' + structureRows.length + ' документов.';"
+        "}"
         "async function structureSaveStatus(docId){"
         "const statusSelect = document.querySelector('select.status-select[data-doc-id=\"' + docId + '\"]');"
         "const fixInput = document.querySelector('input.fix-input[data-doc-id=\"' + docId + '\"]');"
@@ -5223,6 +5308,10 @@ def arm_structure_view_html(db: Session = Depends(get_db)) -> HTMLResponse:
         "catch (err) { structureStatusMsg.textContent = 'Ошибка снятия пометки: ' + err.message; }"
         "});"
         "}"
+        "if (structureFilterText) { structureFilterText.addEventListener('input', applyStructureFilters); }"
+        "if (structureFilterStatus) { structureFilterStatus.addEventListener('change', applyStructureFilters); }"
+        "if (structureFilterDocType) { structureFilterDocType.addEventListener('change', applyStructureFilters); }"
+        "applyStructureFilters();"
         "</script>"
     )
     return _arm_simple_page(title="АРМ: структура и действия", active_nav="structure", body_html=body_html)
@@ -6687,31 +6776,20 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         todo_items_html.append(row)
     todo_html = "".join(todo_items_html) or "<li>Список задач пуст</li>"
 
-    llm_badge_class = "llm-ok" if payload.local_llm_reachable else "llm-down"
-    llm_badge_text = "ДОСТУПНА" if payload.local_llm_reachable else "НЕДОСТУПНА"
-
     script_html = r"""
 <script>
     const TIMEOUTS_MS = {
         default: 20000,
         status: 12000,
         tree: 45000,
-        llm: 240000,
         scanner: 240000,
         ingest: 300000,
         checklist: 45000,
         checklistGenerate: 60000
     };
 
-    const sendBtn = document.getElementById('armSend');
-    const question = document.getElementById('armQuestion');
-    const profile = document.getElementById('armProfile');
-    const answer = document.getElementById('armAnswer');
-    const sendOnEnterCheckbox = document.getElementById('armSendOnEnter');
-    const voiceBtn = document.getElementById('armVoiceBtn');
-    const voiceHint = document.getElementById('armVoiceHint');
-
     const treePathInput = document.getElementById('treePath');
+    const treeSmartSearch = document.getElementById('treeSmartSearch');
     const treeOpenBtn = document.getElementById('treeOpenBtn');
     const treeBackBtn = document.getElementById('treeBackBtn');
     const treeForwardBtn = document.getElementById('treeForwardBtn');
@@ -6721,6 +6799,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     const treeView = document.getElementById('treeView');
     const treeHint = document.getElementById('treeHint');
     const structureCard = document.getElementById('structureCard');
+    const uploadCard = document.getElementById('uploadCard');
     const interactionHint = document.getElementById('interactionHint');
     const actionNavigatorPath = document.getElementById('actionNavigatorPath');
     const actionNavigatorSteps = document.getElementById('actionNavigatorSteps');
@@ -6740,6 +6819,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     const fileSaveBtn = document.getElementById('fileSaveBtn');
     const fileDownloadBtn = document.getElementById('fileDownloadBtn');
     const filePrintBtn = document.getElementById('filePrintBtn');
+    const fileOpenEditorBtn = document.getElementById('fileOpenEditorBtn');
     const fileZoomOutBtn = document.getElementById('fileZoomOutBtn');
     const fileZoomResetBtn = document.getElementById('fileZoomResetBtn');
     const fileZoomInBtn = document.getElementById('fileZoomInBtn');
@@ -6748,8 +6828,9 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
 
     const scannerDevices = document.getElementById('scannerDevices');
     const scannerDocType = document.getElementById('scannerDocType');
-    const scannerProfile = document.getElementById('scannerProfile');
-    const scannerProfileLabel = document.getElementById('scannerProfileLabel');
+    const scannerDpi600 = document.getElementById('scannerDpi600');
+    const scannerUseColor = document.getElementById('scannerUseColor');
+    const scannerModeLabel = document.getElementById('scannerModeLabel');
     const scannerSortMode = document.getElementById('scannerSortMode');
     const scannerSubject = document.getElementById('scannerSubject');
     const scannerEmployee = document.getElementById('scannerEmployee');
@@ -6828,8 +6909,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     const uploadUseCurrentBtn = document.getElementById('uploadUseCurrentBtn');
     const uploadAutoUseTree = document.getElementById('uploadAutoUseTree');
 
-    const llmBadge = document.getElementById('llmBadge');
-    const llmDesc = document.getElementById('llmDesc');
     const backToTopBtn = document.getElementById('backToTopBtn');
 
     const NODE_LABELS = {
@@ -6880,17 +6959,8 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     let treeNavigationIndex = -1;
     let fileSourceVisible = false;
     let filePreviewZoom = 1;
-    let currentScannerProfile = 1;
-    let voiceRecognition = null;
-    let voiceListening = false;
-    let voiceFallbackMode = false;
-    let voiceFallbackStream = null;
-    let voiceFallbackAudioCtx = null;
-    let voiceFallbackSource = null;
-    let voiceFallbackProcessor = null;
-    let voiceFallbackChunks = [];
-    let voiceFallbackSampleRate = 16000;
-    let voiceLastTranscript = '';
+    let currentScannerDpi = 300;
+    let currentScannerGrayscale = true;
 
     const SCANNER_DOC_TYPES_REQUIRING_EMPLOYEE = new Set(['PASSPORT']);
     const MANUAL_REVIEW_TARGET_BY_SCAN_TYPE = {
@@ -6903,12 +6973,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         ACT: '05_execution_docs/admission_acts',
         OTHER: '10_scan_inbox/manual_review',
     };
-
-    const canGoogleSpeechFallback = Boolean(
-        navigator.mediaDevices
-        && navigator.mediaDevices.getUserMedia
-        && (window.AudioContext || window.webkitAudioContext)
-    );
 
     async function api(url, options, timeoutMs = TIMEOUTS_MS.default, timeoutMessage = '') {
         const controller = new AbortController();
@@ -7055,6 +7119,25 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         window.setTimeout(() => structureCard.classList.remove('action-focus'), 1400);
     }
 
+    function embedUploadCardIntoStructure() {
+        if (!structureCard || !uploadCard || uploadCard === structureCard) {
+            return;
+        }
+
+        const titleNode = uploadCard.querySelector(':scope > h2');
+        const sectionTitle = document.createElement('h2');
+        sectionTitle.textContent = titleNode ? String(titleNode.textContent || 'Загрузить файл на объект') : 'Загрузить файл на объект';
+        sectionTitle.style.marginTop = '12px';
+        structureCard.appendChild(sectionTitle);
+
+        const blocks = Array.from(uploadCard.children).filter((node) => node !== titleNode);
+        for (const node of blocks) {
+            structureCard.appendChild(node);
+        }
+
+        uploadCard.remove();
+    }
+
     function ensurePreviewCardExpanded() {
         if (!previewCard) {
             return;
@@ -7181,16 +7264,16 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         if (!fileRenderFrame || !fileRenderWrap) {
             return;
         }
-        const safeZoom = Math.max(0.5, Math.min(2, Number(filePreviewZoom) || 1));
+        const safeZoom = Math.max(0.25, Math.min(3, Number(filePreviewZoom) || 1));
         filePreviewZoom = safeZoom;
         fileRenderFrame.style.transformOrigin = '0 0';
         fileRenderFrame.style.transform = 'scale(' + safeZoom + ')';
         fileRenderFrame.style.width = (100 / safeZoom) + '%';
-        fileRenderFrame.style.height = (66 / safeZoom) + 'vh';
+        fileRenderFrame.style.height = (82 / safeZoom) + 'vh';
     }
 
     function setPreviewZoom(nextZoom) {
-        filePreviewZoom = Math.max(0.5, Math.min(2, Number(nextZoom) || 1));
+        filePreviewZoom = Math.max(0.25, Math.min(3, Number(nextZoom) || 1));
         applyPreviewZoom();
         if (fileZoomResetBtn) {
             fileZoomResetBtn.textContent = Math.round(filePreviewZoom * 100) + '%';
@@ -7198,17 +7281,67 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         setFileMeta('Масштаб предпросмотра: ' + Math.round(filePreviewZoom * 100) + '%');
     }
 
-    function scannerProfileText(profile) {
-        if (profile === 1) return 'Профиль 1: 300 dpi, grayscale';
-        if (profile === 2) return 'Профиль 2: 400/600 dpi, grayscale';
-        return 'Профиль 3: 400/600 dpi, color';
+    function formatBytes(sizeBytes) {
+        const value = Number(sizeBytes);
+        if (!Number.isFinite(value) || value < 0) {
+            return '-';
+        }
+        if (value < 1024) {
+            return Math.round(value) + ' Б';
+        }
+        if (value < 1024 * 1024) {
+            return (value / 1024).toFixed(1) + ' КБ';
+        }
+        return (value / (1024 * 1024)).toFixed(2) + ' МБ';
     }
 
-    function updateScannerProfileLabel() {
-        if (!scannerProfileLabel) {
+    async function fetchFileStat(relPath) {
+        const safePath = normalizeRelPath(relPath || '');
+        if (!safePath) {
+            return null;
+        }
+        try {
+            return await api('/arm/fs/stat?rel_path=' + encodeURIComponent(safePath));
+        } catch (_err) {
+            return null;
+        }
+    }
+
+    function scannerModeText() {
+        return currentScannerDpi + ' dpi, ' + (currentScannerGrayscale ? 'grayscale' : 'color');
+    }
+
+    function updateScannerModeLabel() {
+        if (!scannerModeLabel) {
             return;
         }
-        scannerProfileLabel.textContent = scannerProfileText(currentScannerProfile);
+        scannerModeLabel.textContent = 'Параметры: ' + scannerModeText();
+    }
+
+    function applyTreeSmartFilter() {
+        if (!treeView || !treeSmartSearch) {
+            return;
+        }
+        const query = String(treeSmartSearch.value || '').trim().toLowerCase();
+        const terms = query.split(/\s+/).filter(Boolean);
+        const rows = Array.from(treeView.querySelectorAll('li'));
+        for (const row of rows) {
+            const anchor = row.querySelector('a[data-path]');
+            if (!anchor) {
+                row.style.display = '';
+                continue;
+            }
+            if (!terms.length) {
+                row.style.display = '';
+                continue;
+            }
+            const haystack = ((anchor.textContent || '') + ' ' + (anchor.getAttribute('data-path') || ''))
+                .toLowerCase()
+                .replace(/[_-]/g, ' ')
+                .replace(/ё/g, 'е');
+            const ok = terms.every((term) => haystack.includes(term.replace(/ё/g, 'е')));
+            row.style.display = ok ? '' : 'none';
+        }
     }
 
     async function moveCurrentFile() {
@@ -8533,449 +8666,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         }
     }
 
-    async function refreshLLMStatus() {
-        const hasBadge = llmBadge instanceof HTMLElement;
-        const hasDesc = llmDesc instanceof HTMLElement;
-
-        try {
-            const statusData = await api('/local-llm/status', undefined, TIMEOUTS_MS.status);
-            const runtimeData = await api('/local-llm/runtime', undefined, TIMEOUTS_MS.status);
-            if (statusData.is_reachable) {
-                if (hasBadge) {
-                    llmBadge.textContent = 'ДОСТУПНА';
-                    llmBadge.classList.remove('llm-down');
-                    llmBadge.classList.add('llm-ok');
-                }
-                if (hasDesc) {
-                    llmDesc.textContent = 'Модель: ' + (statusData.default_model || '-') + '; ускорение: ' + (runtimeData.acceleration || '-') + '; активных моделей: ' + (runtimeData.running_models_count ?? 0);
-                }
-            } else {
-                if (hasBadge) {
-                    llmBadge.textContent = 'НЕДОСТУПНА';
-                    llmBadge.classList.remove('llm-ok');
-                    llmBadge.classList.add('llm-down');
-                }
-                if (hasDesc) {
-                    llmDesc.textContent = 'Локальная LLM недоступна. Проверьте процесс Ollama.';
-                }
-            }
-        } catch (err) {
-            if (hasBadge) {
-                llmBadge.textContent = 'ОШИБКА';
-                llmBadge.classList.remove('llm-ok');
-                llmBadge.classList.add('llm-down');
-            }
-            if (hasDesc) {
-                llmDesc.textContent = 'Ошибка проверки LLM: ' + err;
-            }
-        }
-    }
-
-    const PROFILE_LABELS = {
-        fast: 'Быстрый',
-        balanced: 'Сбалансированный',
-        quality: 'Качество',
-    };
-
-    function profileLabel(profileId) {
-        const key = String(profileId || '').trim();
-        return PROFILE_LABELS[key] || key || '-';
-    }
-
-    async function requestAssist(questionText, profileId) {
-        return api(
-            '/arm/assist',
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question: questionText, profile: profileId, allow_fallback: true })
-            },
-            TIMEOUTS_MS.llm,
-            'Локальная LLM не успела ответить за отведенное время. Попробуйте профиль «Быстрый» или повторите запрос позже.'
-        );
-    }
-
-    function formatAssistMeta(data) {
-        return 'модель=' + (data.model || '-') + '; профиль=' + profileLabel(data.used_profile) + '; резерв=' + String(data.fallback_used) + '; токенов/сек=' + (data.eval_tokens_per_sec ?? '-');
-    }
-
-    function setVoiceHint(text) {
-        if (!voiceHint) {
-            return;
-        }
-        voiceHint.textContent = text || '';
-    }
-
-    function mergeVoiceChunks(chunks) {
-        const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-        const result = new Float32Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-            result.set(chunk, offset);
-            offset += chunk.length;
-        }
-        return result;
-    }
-
-    function encodeWav(samples, sampleRate) {
-        const bytesPerSample = 2;
-        const blockAlign = bytesPerSample;
-        const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
-        const view = new DataView(buffer);
-
-        const writeString = (offset, value) => {
-            for (let i = 0; i < value.length; i += 1) {
-                view.setUint8(offset + i, value.charCodeAt(i));
-            }
-        };
-
-        writeString(0, 'RIFF');
-        view.setUint32(4, 36 + samples.length * bytesPerSample, true);
-        writeString(8, 'WAVE');
-        writeString(12, 'fmt ');
-        view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true);
-        view.setUint16(22, 1, true);
-        view.setUint32(24, sampleRate, true);
-        view.setUint32(28, sampleRate * blockAlign, true);
-        view.setUint16(32, blockAlign, true);
-        view.setUint16(34, 16, true);
-        writeString(36, 'data');
-        view.setUint32(40, samples.length * bytesPerSample, true);
-
-        let offset = 44;
-        for (let i = 0; i < samples.length; i += 1) {
-            const sample = Math.max(-1, Math.min(1, samples[i]));
-            view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-            offset += 2;
-        }
-
-        return new Blob([view], { type: 'audio/wav' });
-    }
-
-    function cleanupVoiceFallbackCapture() {
-        if (voiceFallbackProcessor) {
-            try {
-                voiceFallbackProcessor.disconnect();
-            } catch (_err) {
-                // ignore node cleanup errors
-            }
-            voiceFallbackProcessor.onaudioprocess = null;
-            voiceFallbackProcessor = null;
-        }
-
-        if (voiceFallbackSource) {
-            try {
-                voiceFallbackSource.disconnect();
-            } catch (_err) {
-                // ignore node cleanup errors
-            }
-            voiceFallbackSource = null;
-        }
-
-        if (voiceFallbackStream) {
-            for (const track of voiceFallbackStream.getTracks()) {
-                track.stop();
-            }
-            voiceFallbackStream = null;
-        }
-
-        if (voiceFallbackAudioCtx) {
-            voiceFallbackAudioCtx.close().catch(() => {});
-            voiceFallbackAudioCtx = null;
-        }
-    }
-
-    async function transcribeVoiceWithGoogle(wavBlob) {
-        const form = new FormData();
-        form.append('audio', wavBlob, 'voice.wav');
-
-        const response = await fetch('/arm/speech/google-transcribe?language=ru-RU', {
-            method: 'POST',
-            body: form,
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.detail || response.statusText || 'Ошибка сервиса распознавания');
-        }
-        return data;
-    }
-
-    async function startGoogleVoiceFallbackCapture() {
-        if (!canGoogleSpeechFallback) {
-            setVoiceHint('Google fallback недоступен: браузер не поддерживает захват аудио с микрофона.');
-            return;
-        }
-
-        try {
-            const AudioCtor = window.AudioContext || window.webkitAudioContext;
-            voiceFallbackStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            voiceFallbackAudioCtx = new AudioCtor({ sampleRate: 16000 });
-            voiceFallbackSampleRate = Number(voiceFallbackAudioCtx.sampleRate || 16000);
-            voiceFallbackChunks = [];
-
-            voiceFallbackSource = voiceFallbackAudioCtx.createMediaStreamSource(voiceFallbackStream);
-            voiceFallbackProcessor = voiceFallbackAudioCtx.createScriptProcessor(4096, 1, 1);
-            voiceFallbackProcessor.onaudioprocess = (event) => {
-                const input = event.inputBuffer.getChannelData(0);
-                voiceFallbackChunks.push(new Float32Array(input));
-            };
-
-            voiceFallbackSource.connect(voiceFallbackProcessor);
-            voiceFallbackProcessor.connect(voiceFallbackAudioCtx.destination);
-
-            voiceFallbackMode = true;
-            voiceListening = true;
-            updateVoiceButton();
-            setVoiceHint('Слушаю через Google fallback... Нажмите кнопку еще раз, чтобы остановить и распознать.');
-        } catch (err) {
-            cleanupVoiceFallbackCapture();
-            voiceFallbackMode = false;
-            voiceListening = false;
-            updateVoiceButton();
-            setVoiceHint('Не удалось начать запись через Google fallback: ' + err);
-        }
-    }
-
-    async function stopGoogleVoiceFallbackCapture(transcribe = true, message = '') {
-        const chunks = voiceFallbackChunks.slice();
-        const sampleRate = voiceFallbackSampleRate;
-        voiceFallbackChunks = [];
-
-        voiceFallbackMode = false;
-        voiceListening = false;
-        cleanupVoiceFallbackCapture();
-        updateVoiceButton();
-
-        if (!transcribe) {
-            if (message) {
-                setVoiceHint(message);
-            }
-            return;
-        }
-
-        if (!chunks.length) {
-            setVoiceHint('Запись слишком короткая. Попробуйте еще раз и говорите дольше.');
-            return;
-        }
-
-        try {
-            setVoiceHint('Обработка записи и отправка на распознавание Google...');
-            const merged = mergeVoiceChunks(chunks);
-            const wavBlob = encodeWav(merged, sampleRate || 16000);
-            const data = await transcribeVoiceWithGoogle(wavBlob);
-
-            if (data.ok && data.text) {
-                appendVoiceToQuestion(data.text);
-                setVoiceHint('Речь распознана через Google fallback и добавлена в поле вопроса.');
-                return;
-            }
-            setVoiceHint(data.message || 'Распознавание не дало результата. Повторите запись.');
-        } catch (err) {
-            setVoiceHint('Ошибка Google fallback: ' + err);
-        }
-    }
-
-    function updateVoiceButton() {
-        if (!voiceBtn) {
-            return;
-        }
-
-        const useGoogleMode = canGoogleSpeechFallback;
-
-        if (!voiceRecognition && !useGoogleMode) {
-            voiceBtn.disabled = true;
-            voiceBtn.textContent = 'Голос недоступен';
-            return;
-        }
-
-        voiceBtn.disabled = false;
-        if (voiceListening) {
-            voiceBtn.textContent = 'Остановить запись';
-            return;
-        }
-
-        voiceBtn.textContent = useGoogleMode ? 'Голосовой ввод (Google)' : 'Голосовой ввод';
-    }
-
-    function appendVoiceToQuestion(transcript) {
-        const safe = (transcript || '').trim();
-        if (!safe || !question) {
-            return;
-        }
-        const current = (question.value || '').trim();
-        question.value = current ? (current + '\n' + safe) : safe;
-        question.focus();
-    }
-
-    async function stopVoiceInput(message) {
-        if (voiceFallbackMode) {
-            await stopGoogleVoiceFallbackCapture(false, message || 'Голосовой ввод остановлен.');
-            return;
-        }
-
-        voiceListening = false;
-        if (voiceRecognition) {
-            try {
-                voiceRecognition.stop();
-            } catch (_err) {
-                // ignore stop race errors from browser speech API
-            }
-        }
-        updateVoiceButton();
-        if (message) {
-            setVoiceHint(message);
-        }
-    }
-
-    function initVoiceInput() {
-        if (canGoogleSpeechFallback) {
-            voiceRecognition = null;
-            updateVoiceButton();
-            setVoiceHint('Включен серверный Google-режим голосового ввода. Нажмите кнопку, скажите фразу и нажмите кнопку повторно для распознавания.');
-            return;
-        }
-
-        const SpeechCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechCtor) {
-            voiceRecognition = null;
-            updateVoiceButton();
-            setVoiceHint('Голосовой ввод не поддерживается в этом браузере. Откройте страницу в Chrome или Edge.');
-            return;
-        }
-
-        voiceRecognition = new SpeechCtor();
-        voiceRecognition.lang = 'ru-RU';
-        voiceRecognition.interimResults = false;
-        voiceRecognition.continuous = false;
-        voiceRecognition.maxAlternatives = 1;
-
-        voiceRecognition.onresult = (event) => {
-            let recognized = '';
-            for (let i = event.resultIndex; i < event.results.length; i += 1) {
-                const result = event.results[i];
-                if (!result || !result[0]) {
-                    continue;
-                }
-                recognized += result[0].transcript + ' ';
-            }
-            const safeRecognized = recognized.trim();
-            if (!safeRecognized) {
-                return;
-            }
-            voiceLastTranscript = safeRecognized;
-            appendVoiceToQuestion(safeRecognized);
-            voiceListening = false;
-            updateVoiceButton();
-            setVoiceHint('Речь распознана и добавлена в поле вопроса.');
-        };
-
-        voiceRecognition.onerror = (event) => {
-            const code = String(event && event.error ? event.error : 'unknown');
-            voiceListening = false;
-            updateVoiceButton();
-            if (code === 'not-allowed' || code === 'service-not-allowed') {
-                setVoiceHint('Нет доступа к микрофону. Разрешите доступ к микрофону для сайта.');
-                return;
-            }
-            if (code === 'no-speech') {
-                setVoiceHint('Речь не распознана. Повторите попытку.');
-                return;
-            }
-            setVoiceHint('Ошибка голосового ввода: ' + code + '.');
-        };
-
-        voiceRecognition.onend = () => {
-            if (voiceListening) {
-                voiceListening = false;
-                updateVoiceButton();
-                if (!voiceLastTranscript) {
-                    setVoiceHint('Речь не распознана. Попробуйте еще раз и говорите чуть медленнее.');
-                }
-                return;
-            }
-            updateVoiceButton();
-        };
-
-        updateVoiceButton();
-        setVoiceHint('Голосовой ввод готов. Нажмите кнопку и говорите.');
-    }
-
-    async function toggleVoiceInput() {
-        if (canGoogleSpeechFallback) {
-            if (voiceListening) {
-                await stopGoogleVoiceFallbackCapture(true);
-            } else {
-                await startGoogleVoiceFallbackCapture();
-            }
-            return;
-        }
-
-        if (!voiceRecognition) {
-            setVoiceHint('Голосовой ввод недоступен в текущем браузере.');
-            return;
-        }
-
-        if (voiceListening) {
-            await stopVoiceInput('Голосовой ввод остановлен.');
-            return;
-        }
-        try {
-            voiceLastTranscript = '';
-            voiceRecognition.start();
-            voiceListening = true;
-            updateVoiceButton();
-            setVoiceHint('Слушаю... Говорите, текст добавится в поле вопроса.');
-        } catch (err) {
-            voiceListening = false;
-            updateVoiceButton();
-            setVoiceHint('Не удалось запустить голосовой ввод: ' + err);
-        }
-    }
-
-    async function sendAssist() {
-        if (sendBtn.disabled) {
-            return;
-        }
-
-        if (voiceListening) {
-            await stopVoiceInput('Голосовой ввод остановлен перед отправкой запроса.');
-        }
-
-        const text = (question.value || '').trim();
-        if (!text) {
-            answer.textContent = 'Введите вопрос для ассистента.';
-            return;
-        }
-
-        await withBusy(sendBtn, async () => {
-            answer.textContent = 'Выполняется запрос к локальной LLM...';
-            try {
-                let requestedProfile = profile.value || 'fast';
-                let data;
-                try {
-                    data = await requestAssist(text, requestedProfile);
-                } catch (firstError) {
-                    const message = String(firstError || '');
-                    if (requestedProfile !== 'fast' && message.toLowerCase().includes('не успела')) {
-                        answer.textContent = 'Профиль ' + profileLabel(requestedProfile) + ' отвечает слишком долго. Пробую повторно в режиме «Быстрый»...';
-                        requestedProfile = 'fast';
-                        profile.value = 'fast';
-                        data = await requestAssist(text, 'fast');
-                    } else {
-                        throw firstError;
-                    }
-                }
-
-                answer.textContent = formatAssistMeta(data) + '\\n\\n' + (data.response || '');
-                setInteractionHint('Ответ ассистента получен. Режим: ' + profileLabel(data.used_profile || requestedProfile) + '.', 'ok');
-            } catch (err) {
-                answer.textContent = 'Ошибка LLM: ' + err;
-                setInteractionHint('Запрос к ассистенту завершился ошибкой: ' + err, 'error');
-            }
-        });
-    }
-
     async function loadTree(relPath, options = {}) {
         const rememberHistory = options.rememberHistory !== false;
         const requestedPath = normalizeRelPath(relPath);
@@ -9111,6 +8801,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         }
         renderTreeBreadcrumb(rel);
         updateTreeNavButtons(rel);
+        applyTreeSmartFilter();
         applyEmployeeIdFromPath(rel);
         syncEmployeeChecklistPath(rel);
         renderActionNavigator(rel, 'Открытие пути');
@@ -9122,6 +8813,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         filePathLabel.textContent = describePath(data.rel_path);
         fileEditor.value = data.content;
         fileEditor.readOnly = false;
+        fileSourceVisible = true;
         updateFileSourceVisibility();
         refreshRenderedPreview(data.rel_path);
         if (fileSaveBtn) {
@@ -9129,7 +8821,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         }
         applyEmployeeIdFromPath(data.rel_path);
         syncEmployeeChecklistPath(data.rel_path);
-        setFileMeta('Кодировка: ' + data.encoding + '; длина: ' + String(data.content.length));
+        setFileMeta('Кодировка: ' + data.encoding + '; размер: ' + formatBytes(data.size_bytes) + '; длина: ' + String(data.content.length));
         focusPreviewCard(true);
         setInteractionHint('Открыт текстовый файл: можно редактировать и сохранять в блоке «Предпросмотр, правка, печать».', 'ok');
     }
@@ -9154,6 +8846,12 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             fileSaveBtn.disabled = true;
         }
         setFileMeta('Выбран бинарный файл. Используйте «Скачать» или «Печать».');
+        fetchFileStat(safePath).then((stat) => {
+            if (!stat) {
+                return;
+            }
+            setFileMeta('Выбран бинарный файл. Размер: ' + formatBytes(stat.size_bytes) + '. Используйте «Скачать» или «Печать».');
+        });
         updateTaskActionContext(safePath, sourceLabel || 'Файл');
         renderActionNavigator(safePath, sourceLabel || 'Файл');
         applyEmployeeIdFromPath(safePath);
@@ -9180,7 +8878,12 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             setFileMeta('Выберите файл из дерева.');
             return;
         }
-        window.open('/arm/fs/download?rel_path=' + encodeURIComponent(currentFile), '_blank');
+        const a = document.createElement('a');
+        a.href = '/arm/fs/download?rel_path=' + encodeURIComponent(currentFile);
+        a.download = currentFile.split('/').pop();
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     }
 
     function openPrintPreview(relPath, autoPrint) {
@@ -9271,9 +8974,8 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 employee_id: employeeId || null,
                 device_index: Number((scannerDevices && scannerDevices.value) || 1),
                 image_format: 'jpg',
-                scan_profile: currentScannerProfile,
-                dpi: 300,
-                grayscale: false
+                dpi: currentScannerDpi,
+                grayscale: currentScannerGrayscale
             })
         }, TIMEOUTS_MS.scanner, 'Сканирование заняло слишком много времени. Скан мог завершиться, но сервер не успел вернуть ответ.');
         scannerMsg.textContent = data.message || 'Скан добавлен во входящую папку.';
@@ -9771,31 +9473,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         });
     });
 
-    sendBtn.addEventListener('click', sendAssist);
-    if (voiceBtn) {
-        voiceBtn.addEventListener('click', toggleVoiceInput);
-    }
-    question.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter' || event.isComposing) {
-            return;
-        }
-        const sendOnEnter = Boolean(sendOnEnterCheckbox && sendOnEnterCheckbox.checked);
-        const shouldSend = event.ctrlKey || (sendOnEnter && !event.shiftKey);
-        if (!shouldSend) {
-            return;
-        }
-        event.preventDefault();
-        sendAssist();
-    });
-    if (sendOnEnterCheckbox) {
-        sendOnEnterCheckbox.addEventListener('change', () => {
-            if (sendOnEnterCheckbox.checked) {
-                setInteractionHint('Режим ввода ассистента: Enter отправляет, Shift+Enter перенос строки.', 'ok');
-            } else {
-                setInteractionHint('Режим ввода ассистента: Ctrl+Enter отправляет, Enter перенос строки.', 'ok');
-            }
-        });
-    }
     if (scannerDocType) {
         scannerDocType.addEventListener('change', syncScannerRequirements);
     }
@@ -9901,13 +9578,22 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     fileDownloadBtn.addEventListener('click', downloadCurrentFile);
     filePrintBtn.addEventListener('click', () => withBusy(filePrintBtn, printCurrentFile).catch((err) => setFileMeta('Ошибка печати: ' + err)));
     if (fileZoomOutBtn) {
-        fileZoomOutBtn.addEventListener('click', () => setPreviewZoom(filePreviewZoom - 0.1));
+        fileZoomOutBtn.addEventListener('click', () => setPreviewZoom(filePreviewZoom - 0.05));
     }
     if (fileZoomResetBtn) {
         fileZoomResetBtn.addEventListener('click', () => setPreviewZoom(1));
     }
     if (fileZoomInBtn) {
-        fileZoomInBtn.addEventListener('click', () => setPreviewZoom(filePreviewZoom + 0.1));
+        fileZoomInBtn.addEventListener('click', () => setPreviewZoom(filePreviewZoom + 0.05));
+    }
+    if (fileOpenEditorBtn) {
+        fileOpenEditorBtn.addEventListener('click', () => {
+            if (!currentFile) {
+                setFileMeta('Выберите файл из дерева.');
+                return;
+            }
+            window.open('/arm/editor?rel_path=' + encodeURIComponent(currentFile) + '&back=' + encodeURIComponent('/arm/dashboard'), '_blank');
+        });
     }
     if (fileMoveBtn) {
         fileMoveBtn.addEventListener('click', () => withBusy(fileMoveBtn, moveCurrentFile).catch((err) => setFileMeta('Ошибка перемещения: ' + err)));
@@ -9921,11 +9607,20 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             updateFileSourceVisibility();
         });
     }
-    if (scannerProfile) {
-        scannerProfile.addEventListener('input', () => {
-            currentScannerProfile = Math.max(1, Math.min(3, Number(scannerProfile.value) || 1));
-            updateScannerProfileLabel();
+    if (scannerDpi600) {
+        scannerDpi600.addEventListener('change', () => {
+            currentScannerDpi = scannerDpi600.checked ? 600 : 300;
+            updateScannerModeLabel();
         });
+    }
+    if (scannerUseColor) {
+        scannerUseColor.addEventListener('change', () => {
+            currentScannerGrayscale = !scannerUseColor.checked;
+            updateScannerModeLabel();
+        });
+    }
+    if (treeSmartSearch) {
+        treeSmartSearch.addEventListener('input', applyTreeSmartFilter);
     }
     scanBtn.addEventListener('click', () => withBusy(scanBtn, scanToInbox).catch((err) => {
         const message = String(err || '');
@@ -10232,14 +9927,13 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         }));
     }
 
+    embedUploadCardIntoStructure();
     initCollapsibleCards();
     loadObjectProfile().catch((err) => {
         if (objectProfileMsg) {
             objectProfileMsg.textContent = 'Не удалось загрузить карточку объекта: ' + err;
         }
     });
-    refreshLLMStatus();
-    setInterval(refreshLLMStatus, 10000);
     resetScannerProgress('ожидание действий');
     refreshScannerDevices();
     refreshManualReviewRows().catch((err) => {
@@ -10252,15 +9946,10 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         setEmployeeChecklistMsg('Не удалось загрузить список сотрудников: ' + err, 'error');
     });
     syncScannerRequirements();
-    currentScannerProfile = Math.max(1, Math.min(3, Number(scannerProfile && scannerProfile.value) || 1));
-    updateScannerProfileLabel();
+    currentScannerDpi = scannerDpi600 && scannerDpi600.checked ? 600 : 300;
+    currentScannerGrayscale = !(scannerUseColor && scannerUseColor.checked);
+    updateScannerModeLabel();
     setPreviewZoom(1);
-    initVoiceInput();
-    window.addEventListener('beforeunload', () => {
-        if (voiceListening) {
-            stopVoiceInput('');
-        }
-    });
     renderActionNavigator('', 'Старт');
     setInteractionHint('Подсказка: кликните пункт в «Критичные пробелы» или «Задачи на сегодня», система откроет нужную папку и подсветит рабочий блок.');
     setEmployeeChecklistMsg('Выберите сотрудника в дереве или задайте путь вручную, затем нажмите «Проверить комплект».');
@@ -10332,14 +10021,14 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         background: radial-gradient(circle at 85% 15%, #d7efe6 0%, #f4efe7 45%, #e6eff4 100%);
         color: var(--ink);
     }}
-    .wrap {{ max-width: 1180px; margin: 24px auto; padding: 0 16px 24px; }}
+    .wrap {{ max-width: 1440px; margin: 24px auto; padding: 0 16px 24px; }}
     .hero {{ background: var(--card); border: 1px solid #d8cfc2; border-radius: 16px; padding: 18px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06); }}
     .tabs {{ display: inline-flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }}
     .tab {{ display: inline-block; text-decoration: none; padding: 7px 12px; border-radius: 999px; border: 1px solid #c8d2d8; background: #f8fbfd; color: #334155; font-size: 13px; font-weight: 600; }}
     .tab:hover {{ background: #eff6fb; }}
     .tab.active {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
     .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-top: 16px; }}
-    .dashboard-main-grid {{ grid-template-columns: repeat(2, minmax(420px, 1fr)); }}
+    .dashboard-main-grid {{ grid-template-columns: minmax(360px, 0.95fr) minmax(540px, 1.35fr); align-items:start; }}
     .card {{ background: var(--card); border: 1px solid #d8cfc2; border-radius: 16px; padding: 14px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.05); }}
     .card-collapse-head {{ display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }}
     .card-collapse-head h2 {{ margin: 0; }}
@@ -10360,9 +10049,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     .action-note {{ margin-top: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid #c9dbe4; background: #eef6f9; color: #1e3a4a; font-size: 13px; line-height: 1.35; }}
     .action-note.hint-error {{ background: #fef2f2; border-color: #fecaca; color: #991b1b; }}
     .action-note.hint-ok {{ background: #ecfdf5; border-color: #bbf7d0; color: #065f46; }}
-    .llm-badge {{ display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; animation: pulse 1.2s infinite; }}
-    .llm-ok {{ background: #d1fae5; color: #065f46; }}
-    .llm-down {{ background: #fee2e2; color: #991b1b; }}
     @keyframes pulse {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0.35; }} 100% {{ opacity: 1; }} }}
     .card.action-focus {{ box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.25), 0 8px 24px rgba(0, 0, 0, 0.08); transition: box-shadow 0.2s ease; }}
     .tree {{ background: #fff; border: 1px solid #d8e0e0; border-radius: 10px; max-height: 280px; overflow: auto; padding: 8px; }}
@@ -10391,7 +10077,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
     textarea {{ min-height: 220px; resize: vertical; font-family: Consolas, "Courier New", monospace; }}
     .is-hidden {{ display: none !important; }}
     #fileRenderWrap {{ width: 100%; overflow: auto; border-radius: 10px; }}
-    #fileRenderFrame {{ width: 100%; min-height: 66vh; border: 1px solid #d8e0e0; border-radius: 10px; background: #fff; margin-top: 10px; }}
+    #fileRenderFrame {{ width: 100%; min-height: 82vh; border: 1px solid #d8e0e0; border-radius: 10px; background: #fff; margin-top: 10px; }}
     pre {{ background: #f8fbfb; border: 1px solid #d8e0e0; border-radius: 10px; padding: 10px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; font-size: 13px; }}
     .inline-grid {{ display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 8px; margin-top: 8px; }}
     .action-nav {{ margin-top: 10px; padding: 10px 12px; border-radius: 10px; border: 1px dashed #b9ced8; background: #f6fbfd; }}
@@ -10476,8 +10162,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
         <div class=\"meta\">Сформировано (UTC): {escape(payload.generated_at.isoformat())}</div>
         <div class=\"kpi\">{payload.checklist_progress_percent}%</div>
         <div>Комплектность: {payload.checklist_ready}/{payload.checklist_total}</div>
-        <div class=\"meta\">LLM статус: <span id=\"llmBadge\" class=\"llm-badge {llm_badge_class}\">{llm_badge_text}</span></div>
-        <div class="meta" id="llmDesc">Проверка локальной LLM...</div>
         <article class="card" id="todoCard"> 
         <div class=\"action-note\" id=\"interactionHint\">Подсказка навигации появится здесь после действий.</div>
     </section>
@@ -10504,6 +10188,9 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             <div class=\"actions\" style=\"margin-top:0;\">
                 <input id=\"treePath\" placeholder=\"Относительный путь, например 02_personnel/employees\" />
                 <button class=\"btn secondary\" id=\"treeOpenBtn\">Открыть</button>
+            </div>
+            <div class=\"actions\" style=\"margin-top:8px;\">
+                <input id=\"treeSmartSearch\" placeholder=\"Умный поиск по списку: имя, путь, тип файла\" />
             </div>
             <div class=\"actions tree-toolbar\">
                 <button class=\"btn secondary mini\" id=\"treeBackBtn\" type=\"button\" disabled>Назад</button>
@@ -10560,6 +10247,7 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
             <textarea id=\"fileEditor\" placeholder=\"Содержимое текстового файла\"></textarea>
             <div class=\"actions\">
                 <button class=\"btn secondary\" id=\"fileSourceToggleBtn\" type=\"button\">Показать исходник</button>
+                <button class=\"btn secondary\" id=\"fileOpenEditorBtn\" type=\"button\">Редактировать в окне</button>
                 <button class=\"btn secondary\" id=\"fileSaveBtn\">Сохранить</button>
                 <button class=\"btn secondary\" id=\"fileDownloadBtn\">Скачать</button>
                 <button class=\"btn secondary\" id=\"filePrintBtn\">Печать</button>
@@ -10654,9 +10342,9 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 <datalist id=\"scannerEmployeeSuggestions\"></datalist>
             </div>
             <div class=\"actions\" style=\"margin-top:8px; align-items:center; gap:10px; flex-wrap:wrap;\">
-                <label class=\"meta\" for=\"scannerProfile\" style=\"min-width:120px;\">Профиль скана:</label>
-                <input id=\"scannerProfile\" type=\"range\" min=\"1\" max=\"3\" step=\"1\" value=\"1\" style=\"max-width:280px;\" />
-                <span class=\"meta\" id=\"scannerProfileLabel\">Профиль 1: 300 dpi, grayscale</span>
+                <label class=\"flag-control\"><input id=\"scannerDpi600\" type=\"checkbox\" /> DPI 600 (иначе 300)</label>
+                <label class=\"flag-control\"><input id=\"scannerUseColor\" type=\"checkbox\" /> Цветной режим (иначе grayscale)</label>
+                <span class=\"meta\" id=\"scannerModeLabel\">Режим: 300 dpi, grayscale</span>
             </div>
             <div class=\"meta\" id=\"scannerEmployeeHint\">Выберите папку сотрудника, чтобы подставить код автоматически.</div>
             <div class=\"system-hint\" id=\"scannerHint\">Режим приказа/акта: код сотрудника можно не заполнять.</div>
@@ -10734,27 +10422,6 @@ def arm_dashboard_html(db: Session = Depends(get_db)) -> HTMLResponse:
                 <button class=\"btn secondary\" id=\"pprImportBtn\" type=\"button\">Импортировать ППР в базу</button>
             </div>
             <div class=\"meta\" id=\"objectProfileMsg\">Загрузка карточки объекта...</div>
-        </article>
-        <article class=\"card\" id=\"assistantCard\">
-            <h2>Ассистент (локальная LLM и Copilot)</h2>
-            <div class=\"system-hint\">Системная подсказка: если ответ медленный, выберите профиль «Быстрый».</div>
-            <div style=\"display:flex; gap:8px; align-items:center; margin:8px 0;\">
-                <label for=\"armProfile\" class=\"meta\">Профиль:</label>
-                <select id=\"armProfile\">
-                    <option value=\"fast\" selected>Быстрый</option>
-                    <option value=\"balanced\">Сбалансированный</option>
-                    <option value=\"quality\">Качество</option>
-                </select>
-                <button class=\"btn secondary\" id=\"armSend\">Отправить</button>
-                <button class=\"btn secondary\" id=\"armVoiceBtn\" type=\"button\">Голосовой ввод</button>
-            </div>
-            <label class=\"meta\" style=\"display:flex; gap:6px; align-items:center; margin:4px 0 8px;\">
-                <input type=\"checkbox\" id=\"armSendOnEnter\" />
-                Enter отправляет сообщение (если выключено, отправка по Ctrl+Enter)
-            </label>
-            <div class=\"meta\" id=\"armVoiceHint\">Голосовой ввод: нажмите кнопку, чтобы начать запись с микрофона.</div>
-            <textarea id=\"armQuestion\" placeholder=\"Например: сформируй задачи на день и предложи порядок устранения пробелов\"></textarea>
-            <pre id=\"armAnswer\">Ожидание запроса...</pre>
         </article>
     </section>
     </div>

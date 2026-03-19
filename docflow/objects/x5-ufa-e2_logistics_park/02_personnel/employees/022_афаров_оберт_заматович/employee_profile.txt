@@ -1,5 +1,0 @@
-employee_id: 022
-last_name: Афаров
-first_name: Оберт
-middle_name: Заматович
-position: Водитель

@@ -5344,35 +5344,128 @@ def arm_editor_html(rel_path: str, back: str | None = None) -> HTMLResponse:
             {_arm_action_anchor(f'/arm/fs/print-preview?rel_path={quote(rel, safe="")}&auto_print=1', 'Печать', new_tab=True)}
             {_arm_action_anchor(f'/arm/fs/download?rel_path={quote(rel, safe="")}', 'Скачать', new_tab=True)}
             {_arm_action_anchor(f'/arm/dashboard?open_path={quote(folder_rel, safe="")}', 'Папка') if folder_rel else ''}
+            <button type=\"button\" class=\"btn-inline\" id=\"editorSourceBtn\">Исходник (Markdown)</button>
             <button type=\"button\" class=\"btn-inline primary\" id=\"editorSaveBtn\">Сохранить</button>
             <button type=\"button\" class=\"btn-inline\" id=\"editorReloadBtn\">Перечитать</button>
         </div>
         <div id=\"editorStatus\" class=\"meta\">Загрузка...</div>
     </section>
-    <section class=\"editor-layout\">
+    <section class=\"editor-main\">
         <div class=\"card\">
-            <div class=\"editor-card-title\">Исходник Markdown / текста</div>
-            <textarea id=\"editorSource\" spellcheck=\"false\"></textarea>
-        </div>
-        <div class=\"card\">
-            <div class=\"editor-card-title\">Предпросмотр для печати</div>
-            <iframe id=\"editorPreview\" title=\"Предпросмотр\"></iframe>
+            <div id=\"editorPreview\" contenteditable=\"true\" spellcheck=\"false\" class=\"editor-form\"></div>
         </div>
     </section>
+
+    <!-- Hidden modal for markdown source view -->
+    <div id=\"editorSourceModal\" class=\"modal\" style=\"display: none;\">
+        <div class=\"modal-content\">
+            <div class=\"modal-header\">
+                <h2>Markdown исходник</h2>
+                <button type=\"button\" class=\"btn-close\" id=\"editorSourceClose\">✕</button>
+            </div>
+            <textarea id=\"editorSource\" spellcheck=\"false\" class=\"editor-source-modal\"></textarea>
+            <div class=\"modal-footer\">
+                <button type=\"button\" class=\"btn-inline\" id=\"editorSourceClose2\">Закрыть</button>
+                <button type=\"button\" class=\"btn-inline primary\" id=\"editorSourceReload\">Перезагрузить из MD</button>
+            </div>
+        </div>
+    </div>
+
     <style>
-    .editor-layout {{ display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr); gap: 16px; margin-top: 16px; }}
-    .editor-card-title {{ font-weight: 700; margin-bottom: 10px; }}
-    #editorSource {{ width: 100%; min-height: 72vh; border: 1px solid #ccd4d7; border-radius: 12px; padding: 12px; font: 14px/1.55 Consolas, 'Courier New', monospace; resize: vertical; box-sizing: border-box; background: #fff; color: #1f2a36; }}
-    #editorPreview {{ width: 100%; min-height: 72vh; border: 1px solid #ccd4d7; border-radius: 12px; background: #fff; }}
-    @media (max-width: 980px) {{ .editor-layout {{ grid-template-columns: 1fr; }} #editorSource, #editorPreview {{ min-height: 48vh; }} }}
+    .editor-main {{ margin-top: 16px; }}
+    .editor-form {{ 
+        width: 100%; 
+        min-height: 72vh; 
+        border: 1px solid #ccd4d7; 
+        border-radius: 12px; 
+        padding: 24px 32px; 
+        box-sizing: border-box; 
+        background: #fff; 
+        color: #1f2a36; 
+        font: 14px/1.6 'Segoe UI', Arial, sans-serif; 
+        overflow: auto; 
+        outline: none; 
+        cursor: text;
+    }}
+    .editor-form:focus {{ border-color: #1a9c7b; box-shadow: 0 0 0 2px #1a9c7b30; }}
+    .editor-form table {{ border-collapse: collapse; width: 100%; margin: 12px 0; }}
+    .editor-form th, .editor-form td {{ border: 1px solid #ccd4d7; padding: 8px 12px; }}
+    .editor-form th {{ background: #f3f6f8; font-weight: 600; }}
+    .editor-form h1 {{ font-size: 1.5em; margin: 20px 0 10px; font-weight: 700; }}
+    .editor-form h2 {{ font-size: 1.25em; margin: 16px 0 8px; font-weight: 700; }}
+    .editor-form h3 {{ font-size: 1.1em; margin: 12px 0 6px; font-weight: 700; }}
+    .editor-form p {{ margin: 8px 0; }}
+    .editor-form .fill-line {{ border-bottom: 1px solid #333; min-width: 200px; display: inline-block; text-align: center; }}
+    .editor-form .fill-note {{ font-size: 11px; color: #666; text-align: center; display: block; margin-top: 2px; }}
+    .editor-form .meta-row {{ display: flex; gap: 24px; margin: 6px 0; }}
+
+    .modal {{ position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }}
+    .modal-content {{ background: #fff; border-radius: 12px; width: 90%; max-width: 900px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }}
+    .modal-header {{ padding: 16px 20px; border-bottom: 1px solid #e0e6ea; display: flex; justify-content: space-between; align-items: center; }}
+    .modal-header h2 {{ margin: 0; font-size: 1.1em; }}
+    .btn-close {{ background: none; border: none; font-size: 24px; cursor: pointer; color: #8a9aab; }}
+    .btn-close:hover {{ color: #1f2a36; }}
+    #editorSource {{ 
+        flex: 1; 
+        border: none; 
+        padding: 12px; 
+        font: 13px/1.5 Consolas, 'Courier New', monospace; 
+        resize: none; 
+        background: #f8fafb; 
+        color: #1f2a36;
+    }}
+    .modal-footer {{ padding: 12px 20px; border-top: 1px solid #e0e6ea; display: flex; gap: 8px; justify-content: flex-end; }}
     </style>
+    <script src=\"https://cdn.jsdelivr.net/npm/marked@9/marked.min.js\"></script>
+    <script src=\"https://cdn.jsdelivr.net/npm/turndown@7/umd/turndown.min.js\"></script>
     <script>
     const editorRelPath = {rel!r};
-    const editorSource = document.getElementById('editorSource');
     const editorPreview = document.getElementById('editorPreview');
+    const editorSource = document.getElementById('editorSource');
     const editorStatus = document.getElementById('editorStatus');
     const editorSaveBtn = document.getElementById('editorSaveBtn');
     const editorReloadBtn = document.getElementById('editorReloadBtn');
+    const editorSourceBtn = document.getElementById('editorSourceBtn');
+    const editorSourceModal = document.getElementById('editorSourceModal');
+    const editorSourceClose = document.getElementById('editorSourceClose');
+    const editorSourceClose2 = document.getElementById('editorSourceClose2');
+    const editorSourceReload = document.getElementById('editorSourceReload');
+
+    // --- MD ↔ HTML компилятор ---
+    marked.use({{ gfm: true, breaks: false }});
+    const td = new TurndownService({{ headingStyle: 'atx', bulletListMarker: '-', codeBlockStyle: 'fenced' }});
+    td.addRule('keep-classed-divs', {{
+        filter: function(node) {{ return node.nodeName === 'DIV' && node.className; }},
+        replacement: function(_c, node) {{ return '\n\n' + node.outerHTML + '\n\n'; }}
+    }});
+    td.addRule('keep-classed-spans', {{
+        filter: function(node) {{ return node.nodeName === 'SPAN' && node.className; }},
+        replacement: function(_c, node) {{ return node.outerHTML; }}
+    }});
+
+    function mdToHtml(md) {{ return marked.parse(md || ''); }}
+    function htmlToMd(html) {{ return td.turndown(html || ''); }}
+
+    let _syncLock = false;
+    let _debounce = null;
+    let _isModified = false;
+
+    // Редактирование печатной формы → обновляем скрытый markdown (с дебаунсом)
+    editorPreview.addEventListener('input', function() {{
+        if (_syncLock) return;
+        _isModified = true;
+        clearTimeout(_debounce);
+        _debounce = setTimeout(function() {{
+            _syncLock = true;
+            editorSource.value = htmlToMd(editorPreview.innerHTML);
+            _syncLock = false;
+        }}, 200);
+    }});
+
+            editorStatus.textContent = 'Символов: ' + editorSource.value.length + ' · не сохранено';
+            _syncLock = false;
+        }}, 200);
+    }});
 
     async function editorApi(url, options) {{
         const response = await fetch(url, options || {{}});
@@ -5387,40 +5480,71 @@ def arm_editor_html(rel_path: str, back: str | None = None) -> HTMLResponse:
         return response.text();
     }}
 
-    function refreshEditorPreview() {{
-        editorPreview.src = '/arm/fs/print-preview?rel_path=' + encodeURIComponent(editorRelPath) + '&auto_print=0&v=' + Date.now();
-    }}
-
     async function loadEditorFile() {{
         editorStatus.textContent = 'Чтение файла...';
         const data = await editorApi('/arm/fs/file?rel_path=' + encodeURIComponent(editorRelPath));
-        editorSource.value = data.content || '';
-        editorStatus.textContent = 'Файл загружен. Символов: ' + String((data.content || '').length) + '.';
-        refreshEditorPreview();
+        const content = data.content || '';
+        editorSource.value = content;
+        _syncLock = true;
+        editorPreview.innerHTML = mdToHtml(content);
+        _syncLock = false;
+        _isModified = false;
+        editorStatus.textContent = 'Файл загружен. Символов: ' + content.length + '.';
     }}
 
     async function saveEditorFile() {{
         editorSaveBtn.disabled = true;
         editorStatus.textContent = 'Сохранение...';
         try {{
+            // Перед сохранением: конвертируем текущий HTML обратно в MD
+            const mdContent = htmlToMd(editorPreview.innerHTML);
             const data = await editorApi('/arm/fs/file', {{
                 method: 'POST',
                 headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{ rel_path: editorRelPath, content: editorSource.value }})
+                body: JSON.stringify({{ rel_path: editorRelPath, content: mdContent }})
             }});
             editorStatus.textContent = data.message || 'Сохранено.';
-            refreshEditorPreview();
+            _isModified = false;
         }} finally {{
             editorSaveBtn.disabled = false;
         }}
     }}
 
+    // Обработчики кнопок
     editorSaveBtn.addEventListener('click', () => saveEditorFile().catch((err) => {{
         editorStatus.textContent = 'Ошибка сохранения: ' + err.message;
     }}));
     editorReloadBtn.addEventListener('click', () => loadEditorFile().catch((err) => {{
         editorStatus.textContent = 'Ошибка чтения: ' + err.message;
     }}));
+
+    // Модальное окно для просмотра markdown исходника
+    editorSourceBtn.addEventListener('click', () => {{
+        // Обновляем markdown перед открытием модала
+        editorSource.value = htmlToMd(editorPreview.innerHTML);
+        editorSourceModal.style.display = 'flex';
+    }});
+    editorSourceClose.addEventListener('click', () => {{
+        editorSourceModal.style.display = 'none';
+    }});
+    editorSourceClose2.addEventListener('click', () => {{
+        editorSourceModal.style.display = 'none';
+    }});
+    editorSourceModal.addEventListener('click', (e) => {{
+        if (e.target === editorSourceModal) {{
+            editorSourceModal.style.display = 'none';
+        }}
+    }});
+    editorSourceReload.addEventListener('click', () => {{
+        // Загружаем из markdown и обновляем форму
+        _syncLock = true;
+        editorPreview.innerHTML = mdToHtml(editorSource.value);
+        _syncLock = false;
+        editorStatus.textContent = 'Форма перезагружена из MD.';
+        editorSourceModal.style.display = 'none';
+    }});
+
+    // Загружаем файл при открытии
     loadEditorFile().catch((err) => {{
         editorStatus.textContent = 'Ошибка чтения: ' + err.message;
     }});

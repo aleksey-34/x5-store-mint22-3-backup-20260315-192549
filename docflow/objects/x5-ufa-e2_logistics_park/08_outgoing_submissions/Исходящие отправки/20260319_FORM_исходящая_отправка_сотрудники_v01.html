@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Исходящая отправка - Список сотрудников</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 18mm 14mm 18mm 20mm;
+    }
+
+    :root {
+      --ink: #1f1f1f;
+      --line: #202020;
+      --soft: #6e6e6e;
+      --paper: #fffefc;
+      --accent: #0e3a66;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #f1f4f8 0%, #e8edf3 100%);
+      color: var(--ink);
+      font-family: "Times New Roman", Georgia, serif;
+      line-height: 1.35;
+      padding: 24px;
+    }
+
+    .sheet {
+      max-width: 210mm;
+      margin: 0 auto;
+      background: var(--paper);
+      border: 1px solid #cfd7df;
+      box-shadow: 0 12px 28px rgba(20, 32, 52, 0.12);
+      padding: 18mm 16mm 16mm 16mm;
+    }
+
+    .to-block {
+      width: 58%;
+      margin-left: auto;
+      text-align: left;
+      font-size: 14px;
+      margin-bottom: 14px;
+    }
+
+    .org-title {
+      text-align: center;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      margin-top: 2px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+
+    .org-sub {
+      text-align: center;
+      font-size: 13px;
+      color: var(--soft);
+      margin-bottom: 12px;
+    }
+
+    .meta-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      align-items: center;
+      gap: 14px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 8px 0;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      text-align: center;
+      font-size: 24px;
+      letter-spacing: 0.4px;
+      color: var(--accent);
+    }
+
+    .subtitle {
+      margin: 0 0 14px;
+      text-align: center;
+      font-size: 15px;
+      color: #2e2e2e;
+    }
+
+    .lead {
+      margin: 0 0 12px;
+      font-size: 15px;
+      text-align: justify;
+    }
+
+    .table-title {
+      margin: 16px 0 8px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 13.5px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 7px 8px;
+      vertical-align: top;
+    }
+
+    th {
+      text-align: center;
+      font-weight: 700;
+      background: #f7f9fc;
+    }
+
+    td:nth-child(1), th:nth-child(1) {
+      width: 36px;
+      text-align: center;
+    }
+
+    td:nth-child(4), th:nth-child(4) {
+      width: 126px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    td:nth-child(5), th:nth-child(5) {
+      width: 146px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .signature {
+      margin-top: 22px;
+      display: grid;
+      grid-template-columns: 1fr 220px;
+      gap: 12px;
+      align-items: end;
+      font-size: 14px;
+    }
+
+    .line {
+      border-bottom: 1px solid var(--line);
+      height: 20px;
+    }
+
+    .foot {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--soft);
+      text-align: right;
+    }
+
+    @media print {
+      body {
+        background: #fff;
+        padding: 0;
+      }
+
+      .sheet {
+        border: none;
+        box-shadow: none;
+        max-width: none;
+        margin: 0;
+        padding: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="sheet">
+    <section class="to-block">
+      <div>Директору ООО "Новый Элемент"</div>
+      <div>Паньковой Т.Н.</div>
+    </section>
+
+    <div class="org-title">Индивидуальный предприниматель Исмагилов Вадим Шакирович</div>
+    <div class="org-sub">ИНН 743003400568, ОГРНИП 319745600096672</div>
+
+    <div class="meta-row">
+      <span>г. Уфа</span>
+      <span>Исх. № 22/2026</span>
+      <span>от 19.03.2026</span>
+    </div>
+
+    <h1>ФОРМА ИСХОДЯЩЕЙ ОТПРАВКИ</h1>
+    <p class="subtitle">Список сотрудников с контактными данными</p>
+    <p class="lead">
+      Направляем актуализированный список сотрудников, задействованных на объекте
+      "Логистический парк, г. Уфа, Этап 2". Форма оформлена для внутреннего и
+      внешнего документооборота и содержит ФИО, должность, дату рождения и телефон.
+    </p>
+
+    <div class="table-title">Приложение: реестр сотрудников (кроме водителей)</div>
+    <table>
+      <thead>
+        <tr>
+          <th>№</th>
+          <th>ФИО</th>
+          <th>Должность</th>
+          <th>Дата рождения</th>
+          <th>Телефон</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>Гречушников Денис Владимирович</td><td>Прораб</td><td>27.03.1990</td><td>8 (919) 347-12-55</td></tr>
+        <tr><td>2</td><td>Мельников Алексей Васильевич</td><td>Стропальщик</td><td>02.04.1975</td><td>8 (952) 509-51-30</td></tr>
+        <tr><td>3</td><td>Ситдиков Илдар Фанилевич</td><td>Электрогазосварщик</td><td>02.02.1988</td><td>8 (993) 546-23-15</td></tr>
+        <tr><td>4</td><td>Борисов Ринат Рашитович</td><td>Монтажник стальных и железобетонных конструкций</td><td>16.11.1986</td><td>8 (908) 812-43-56</td></tr>
+        <tr><td>5</td><td>Шарафутдинов Даян Рустамович</td><td>Монтажник стальных и железобетонных конструкций</td><td>20.10.2004</td><td>8 (996) 230-43-69</td></tr>
+        <tr><td>6</td><td>Юлмухаметов Дамиль Камильевич</td><td>Монтажник стальных и железобетонных конструкций</td><td>23.09.1992</td><td>8 (908) 044-51-69</td></tr>
+        <tr><td>7</td><td>Власов Кирилл Андреевич</td><td>Монтажник стальных и железобетонных конструкций</td><td>09.01.2001</td><td>8 (906) 862-27-68</td></tr>
+        <tr><td>8</td><td>Дерябин Кирилл Алексеевич</td><td>Монтажник стальных и железобетонных конструкций</td><td>04.07.2000</td><td>8 (950) 720-94-55</td></tr>
+        <tr><td>9</td><td>Гречушников Антон Владимирович</td><td>Монтажник стальных и железобетонных конструкций</td><td>30.01.1998</td><td>8 (995) 467-08-45</td></tr>
+        <tr><td>10</td><td>Ямалитдинов Алексей Нагимжанович</td><td>Электрогазосварщик</td><td>26.07.1998</td><td>8 (951) 111-23-55</td></tr>
+        <tr><td>11</td><td>Солин Артем Николаевич</td><td>Монтажник стальных и железобетонных конструкций</td><td>08.06.2002</td><td>8 (952) 513-62-65</td></tr>
+        <tr><td>12</td><td>Якупов Расим Рафаилович</td><td>Прораб</td><td>20.11.1984</td><td>8 (951) 786-53-99</td></tr>
+        <tr><td>13</td><td>Исмагилов Салават Шакирович</td><td>Монтажник стальных и железобетонных конструкций</td><td>30.10.1976</td><td>8 (951) 441-59-20</td></tr>
+        <tr><td>14</td><td>Лазарев Алексей Егорович</td><td>Инженер ПТО</td><td>09.06.1987</td><td>8 (987) 478-62-07</td></tr>
+        <tr><td>15</td><td>Абдрахманов Вадим Нурмухаметович</td><td>Стропальщик</td><td>29.03.1987</td><td>8 (904) 810-62-31</td></tr>
+        <tr><td>16</td><td>Бикбулатов Артур Римович</td><td>Геодезист</td><td>05.09.1986</td><td>8 (999) 190-29-56</td></tr>
+      </tbody>
+    </table>
+
+    <section class="signature">
+      <div>
+        Руководитель ИП Исмагилов В.Ш.
+      </div>
+      <div class="line"></div>
+    </section>
+
+    <div class="foot">Подготовлено для раздела: 08_outgoing_submissions / Исходящие отправки</div>
+  </main>
+</body>
+</html>
